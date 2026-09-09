@@ -46,12 +46,28 @@
 					<button id="conn-change" class="btn-link" type="button" hidden>Change</button>
 				</div>
 
+				<!--
+					Service first, then that service's org id. A customer is one
+					company but several org ids, and the engineer types whichever
+					one is on the ticket in front of them - so the service has to
+					be named before the number means anything.
+				-->
 				<form id="connect-form" class="grid" autocomplete="off">
-					<label for="zgid">Customer ZGID</label>
+					<label for="service">Choose Service</label>
 					<span class="colon">:</span>
 					<span class="control">
-						<input id="zgid" list="zgids" inputmode="numeric" placeholder="60021847312" spellcheck="false">
-						<datalist id="zgids"></datalist>
+						<select id="service">
+							<option value="crm">Zoho CRM</option>
+							<option value="campaigns">Zoho Campaigns</option>
+							<option value="desk">Zoho Desk</option>
+						</select>
+					</span>
+
+					<label for="zgid"><span id="orgid-label">CRM Org ID</span></label>
+					<span class="colon">:</span>
+					<span class="control">
+						<select id="zgid-pick"><option value="">— pick a customer —</option></select>
+						<input id="zgid" inputmode="numeric" placeholder="60021847312" spellcheck="false">
 					</span>
 
 					<label for="ticket">Ticket you're on</label>
@@ -92,12 +108,21 @@
 		<aside class="side">
 			<nav class="tabs" role="tablist">
 				<button class="tab on" data-panel="p-start" role="tab" aria-selected="true">Starters</button>
+				<button class="tab" data-panel="p-data" role="tab" aria-selected="false">Data</button>
 				<button class="tab" data-panel="p-audit" role="tab" aria-selected="false">Audit</button>
 			</nav>
 			<div id="p-start" class="pane on" role="tabpanel">
 				<ul id="starters" class="starters">
 					<li class="dim small">Connect to see questions you can ask.</li>
 				</ul>
+			</div>
+			<!--
+				A window on what is actually in the account. Rows come back
+				masked, paged and audited exactly as an answer does - it is a
+				way to see the data, not a way to extract it.
+			-->
+			<div id="p-data" class="pane" role="tabpanel">
+				<div id="data-browser"><p class="dim small">Connect to browse this customer's tables.</p></div>
 			</div>
 			<div id="p-audit" class="pane" role="tabpanel">
 				<div id="audit"><p class="dim small">Every question you ask is logged here.</p></div>

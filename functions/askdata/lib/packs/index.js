@@ -91,9 +91,46 @@ function forOrg(org) {
   return loadedView(packsFor(org?.SUBSCRIBED_PRODUCTS));
 }
 
+/**
+ * The org's tables, narrowed to ONE service.
+ *
+ * When an engineer connects by picking a service and pasting that service's org
+ * id, they are working a ticket about that service. Loading only its pack means
+ * a Desk session cannot read CRM records at all - the tenant boundary gains a
+ * second axis, and the answers get more accurate too, because the translator is
+ * choosing among a third as many tables.
+ *
+ * Returns null when the customer is not subscribed to the service, so the
+ * caller can say so rather than open an empty session.
+ */
+function forOrgService(org, service) {
+  const key = String(service ?? '').trim().toLowerCase();
+  if (!key || key === 'all') return forOrg(org);
+
+  const subscribed = String(org?.SUBSCRIBED_PRODUCTS ?? '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (!subscribed.includes(key)) return null;
+
+  const pack = BY_KEY.get(key);
+  if (!pack) return null;
+
+  return {
+    ...loadedView([...ALWAYS, pack]),
+    // What the CUSTOMER owns, as distinct from what this session loaded. The
+    // guard needs both to explain a refusal correctly: "they don't have Desk"
+    // and "you are in their CRM session" are different problems with different
+    // fixes.
+    orgProducts: subscribed,
+    serviceKey: key,
+    serviceLabel: pack.label,
+  };
+}
+
 /** Every pack, for provisioning. */
 function everything() {
   return loadedView(ALL);
 }
 
-module.exports = { ALL, BY_KEY, ALL_TABLES, packsFor, loadedView, forOrg, everything, LIMITS };
+module.exports = {
+  ALL, BY_KEY, ALL_TABLES, packsFor, loadedView, forOrg, forOrgService, everything, LIMITS,
+};

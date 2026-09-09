@@ -25,6 +25,8 @@
  * comes from the grant, never from anything the caller sent.
  */
 
+const PACK_LABELS = { crm: 'Zoho CRM', campaigns: 'Zoho Campaigns', desk: 'Zoho Desk' };
+
 const { LIMITS } = require('./packs/types');
 
 /** Verbs and constructs that must never appear. */
@@ -257,12 +259,24 @@ function compile(proposed, orgId, loaded) {
         (t) => t.name.toLowerCase() === ref.raw.toLowerCase()
       );
       if (inAnotherPack && !inAnotherPack.internal) {
+        const label = PACK_LABELS[inAnotherPack.pack] ?? inAnotherPack.pack;
+
+        // Two different situations, and telling them apart matters: the customer
+        // may not own the product at all, or they may own it while THIS session
+        // is scoped to a different service. Saying "not subscribed" to an
+        // engineer looking at a customer who plainly is would read as a bug.
+        const owns = (loaded.orgProducts ?? loaded.productKeys).includes(inAnotherPack.pack);
+
         throw new Refused({
-          reason:
-            `This customer isn't subscribed to ${inAnotherPack.pack === 'campaigns' ? 'Zoho Campaigns'
-              : inAnotherPack.pack === 'desk' ? 'Zoho Desk' : inAnotherPack.pack}, ` +
-            `so there is nothing to check there. Their products are: ${loaded.productKeys.join(', ') || 'none'}.`,
-          verdict: `table ${inAnotherPack.name} belongs to unsubscribed pack ${inAnotherPack.pack}`,
+          reason: owns
+            ? `You are connected to this customer's ${loaded.serviceLabel ?? 'current'} data, and ` +
+              `that question is about ${label}. Reconnect with their ${inAnotherPack.pack} org id ` +
+              'to ask it.'
+            : `This customer isn't subscribed to ${label}, so there is nothing to check there. ` +
+              `Their products are: ${(loaded.orgProducts ?? loaded.productKeys).join(', ') || 'none'}.`,
+          verdict: owns
+            ? `table ${inAnotherPack.name} is outside the session service (${loaded.serviceKey})`
+            : `table ${inAnotherPack.name} belongs to unsubscribed pack ${inAnotherPack.pack}`,
           suggestions: loaded.tables.slice(0, 6).map((t) => `ask about ${t.label}`),
         });
       }
@@ -434,7 +448,14 @@ function compile(proposed, orgId, loaded) {
         if (re.test(userWhere)) touched.push(`${table}.${col}`);
       }
     }
-    if (!touched.length) {
+
+    // Every table in the query is small enough to list for one customer, so
+    // the ORG_ID filter alone is a bounded read rather than a scan. "List the
+    // segments" is a question support asks, and it was being refused.
+    const allListable = [...qualifiers.values()]
+      .every(({ table }) => loaded.byTable.get(table)?.listable);
+
+    if (!touched.length && !allListable) {
       throw new Refused({
         reason:
           'That would look at every record in the account, which is too broad. ' +

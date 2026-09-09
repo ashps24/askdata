@@ -20,17 +20,41 @@ const nowStamp = () => istNaive();
 
 /* ---------------------------------------------------------------- registry */
 
+const ORG_COLUMNS =
+  'ORG_ID, ZGID, ORG_NAME, DC, EDITION, SUBSCRIBED_PRODUCTS, STATUS, SIGNED_UP_ON, ' +
+  'CRM_ORG_ID, CMP_ORG_ID, DESK_ORG_ID';
+
+/** Which Orgs column holds the org id a ticket for this service would quote. */
+const SERVICE_COLUMN = { crm: 'CRM_ORG_ID', campaigns: 'CMP_ORG_ID', desk: 'DESK_ORG_ID' };
+
 async function findOrgByZgid(catalystApp, zgid) {
   const result = await catalystApp.zcql().executeZCQLQuery(
-    `SELECT ORG_ID, ZGID, ORG_NAME, DC, EDITION, SUBSCRIBED_PRODUCTS, STATUS, SIGNED_UP_ON ` +
-    `FROM Orgs WHERE ZGID = '${q(zgid)}' LIMIT 1`
+    `SELECT ${ORG_COLUMNS} FROM Orgs WHERE ZGID = '${q(zgid)}' LIMIT 1`
+  );
+  return flattenRows(result)[0] ?? null;
+}
+
+/**
+ * Find a company by the org id printed on a ticket for one specific service.
+ *
+ * A customer is one company but several org ids - the CRM org id, the Campaigns
+ * org id and the Desk portal id are different numbers. The engineer types
+ * whichever is in front of them, so the id is looked up in that service's own
+ * column. Matching across every column instead would let a Desk portal id open
+ * a CRM session, which is precisely the confusion this is meant to remove.
+ */
+async function findOrgByServiceId(catalystApp, service, serviceOrgId) {
+  const column = SERVICE_COLUMN[String(service ?? '').toLowerCase()];
+  if (!column) return null;
+  const result = await catalystApp.zcql().executeZCQLQuery(
+    `SELECT ${ORG_COLUMNS} FROM Orgs WHERE ${column} = '${q(serviceOrgId)}' LIMIT 1`
   );
   return flattenRows(result)[0] ?? null;
 }
 
 async function listOrgs(catalystApp) {
   const result = await catalystApp.zcql().executeZCQLQuery(
-    'SELECT ORG_ID, ZGID, ORG_NAME, DC, SUBSCRIBED_PRODUCTS, STATUS FROM Orgs ORDER BY ORG_NAME LIMIT 0, 50'
+    `SELECT ${ORG_COLUMNS} FROM Orgs ORDER BY ORG_NAME LIMIT 0, 50`
   );
   return flattenRows(result);
 }
@@ -165,4 +189,4 @@ async function fullLog(catalystApp, count = 300) {
 }
 
 module.exports = {
-  requireAudit, findOrgByZgid, listOrgs, entitlementFor, logQuery, recentLog, fullLog, nowStamp, q };
+  requireAudit, findOrgByServiceId, SERVICE_COLUMN, findOrgByZgid, listOrgs, entitlementFor, logQuery, recentLog, fullLog, nowStamp, q };

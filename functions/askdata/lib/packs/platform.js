@@ -41,6 +41,11 @@ module.exports = {
         { name: 'DC', type: 'varchar', max_length: 8, values: ['in', 'com', 'eu', 'au', 'jp', 'ca', 'sa', 'uae'] },
         { name: 'EDITION', type: 'varchar', max_length: 40 },
         { name: 'SUBSCRIBED_PRODUCTS', type: 'varchar', max_length: 200, describe: 'Comma separated pack keys' },
+        // One company, several org ids. A CRM ticket quotes the CRM org id and a
+        // Desk ticket quotes the Desk portal id; both have to resolve here.
+        { name: 'CRM_ORG_ID', type: 'varchar', max_length: 32, indexed: true, describe: 'Org id on a CRM ticket' },
+        { name: 'CMP_ORG_ID', type: 'varchar', max_length: 32, indexed: true, describe: 'Org id on a Campaigns ticket' },
+        { name: 'DESK_ORG_ID', type: 'varchar', max_length: 32, indexed: true, describe: 'Portal id on a Desk ticket' },
         { name: 'STATUS', type: 'varchar', max_length: 20, values: ['active', 'trial', 'suspended'] },
         { name: 'SIGNED_UP_ON', type: 'date' },
       ],
@@ -110,6 +115,7 @@ module.exports = {
 
     {
       name: 'Profiles',
+      listable: true,
       label: 'permission profiles',
       describes: 'A permission profile, scoped to one product. A user holds one per product.',
       columns: [
@@ -143,6 +149,7 @@ module.exports = {
 
     {
       name: 'Permissions',
+      listable: true,
       label: 'the catalog of grantable permissions',
       describes: 'What can be granted, per product and module. Not attached to anyone by itself.',
       columns: [

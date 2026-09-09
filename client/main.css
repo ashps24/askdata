@@ -255,3 +255,97 @@ details.rows summary {
 }
 details.rows summary:hover { color: var(--accent); }
 details.rows .table-wrap { border-top: 1px solid var(--line); }
+
+/* ------------------------------------------------------ connect dropdowns */
+
+#service,
+#zgid-pick {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+#zgid-pick { margin-bottom: 6px; }
+#service:focus,
+#zgid-pick:focus { outline: none; border-color: var(--accent); }
+
+/* A chip that does something, next to the chips that only report. */
+.chip-action {
+  border-color: var(--accent);
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+.chip-action:hover { background: rgba(122, 162, 247, 0.12); }
+
+/* ----------------------------------------------------------- data browser */
+
+.browse-head { margin: 8px 0 10px; font-size: 12.5px; }
+.browse-group { margin-bottom: 12px; }
+.browse-group h4 {
+  margin: 0 0 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink2);
+}
+
+.browse-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  margin-bottom: 3px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.browse-row:hover { border-color: var(--accent); color: var(--accent); }
+
+/* An empty table stays clickable - the reason it is empty is worth reading. */
+.browse-row.is-empty { opacity: 0.55; }
+
+.browse-name { font-family: var(--mono); font-size: 11.5px; }
+.browse-count { font-variant-numeric: tabular-nums; color: var(--ink2); }
+
+.browse-empty {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border-left: 3px solid var(--line);
+  background: var(--surface2);
+  color: var(--ink2);
+  font-size: 12px;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 9px 0 0;
+}
+.btn-page {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.btn-page:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-page:disabled { opacity: 0.4; cursor: default; }

@@ -32,13 +32,26 @@ const ui = {
   timer: el('conn-timer'), countdown: el('conn-countdown'), disconnect: el('disconnect'),
   connectPanel: el('connect-panel'), connectForm: el('connect-form'), change: el('conn-change'),
   zgid: el('zgid'), zgids: el('zgids'), ticket: el('ticket'),
+  service: el('service'), zgidPick: el('zgid-pick'), orgidLabel: el('orgid-label'),
+  dataBrowser: el('data-browser'),
   connectGo: el('connect-go'), connectMsg: el('connect-msg'), detail: el('conn-detail'),
   askPanel: el('ask-panel'), question: el('question'), askBtn: el('ask-btn'),
   transcript: el('transcript'), starters: el('starters'), audit: el('audit'),
 };
 
 /** The one grant. Every request carries it; nothing carries an org id. */
-const state = { token: null, org: null, expiresAt: null, ticket: null, timer: null };
+const state = {
+  token: null, org: null, expiresAt: null, ticket: null, timer: null,
+  service: 'crm',
+  // The customer registry, so choosing a service can offer the right org ids
+  // without another round trip.
+  orgs: [],
+  // Tables this session may browse, from the connect response.
+  tables: [], explore: { table: null, page: 1 },
+};
+
+const SERVICE_LABELS = { crm: 'CRM', campaigns: 'Campaigns', desk: 'Desk' };
+const SERVICE_COLUMN = { crm: 'CRM_ORG_ID', campaigns: 'CMP_ORG_ID', desk: 'DESK_ORG_ID' };
 
 /* ------------------------------------------------------------------ utils */
 
@@ -131,8 +144,13 @@ function onConnected(r) {
 
   ui.bar.dataset.state = 'on';
   ui.org.textContent = r.org_name;
+  state.service = r.service ?? 'all';
+  state.tables = r.explorable_tables ?? [];
+  state.explore = { table: null, page: 1 };
+
   ui.meta.textContent =
-    `ZGID ${r.zgid} · ${String(r.dc).toUpperCase()} · ${r.products.join(', ')} · ticket ${r.ticket_id}`;
+    `${SERVICE_LABELS[state.service] ?? 'All services'} ${r.service_org_id ?? r.zgid} · ` +
+    `${String(r.dc).toUpperCase()} · ticket ${r.ticket_id}`;
   ui.timer.hidden = false;
   ui.disconnect.hidden = false;
   ui.change.hidden = false;
@@ -142,7 +160,21 @@ function onConnected(r) {
     h('span', { class: 'chip' }, h('b', { text: r.edition ?? '—' }), ' edition'),
     h('span', { class: 'chip' }, h('b', { text: String(r.queryable_tables) }), ' tables loaded'),
     h('span', { class: 'chip' }, h('b', { text: r.entitled_via }), ' entitlement'),
-    h('span', { class: 'chip' }, h('b', { text: r.engineer.email }), ` (${r.engineer.identified_by})`)
+    h('span', { class: 'chip' }, h('b', { text: r.engineer.email }), ` (${r.engineer.identified_by})`),
+    // The customer's other services, one click away. Switching is a reconnect,
+    // not a widening of this session.
+    ...(r.services_available ?? [])
+      .filter((sv) => sv.service !== state.service)
+      .map((sv) => h('button', {
+        class: 'chip chip-action', type: 'button',
+        title: `Reconnect to ${r.org_name} on ${SERVICE_LABELS[sv.service]} (${sv.org_id})`,
+        onclick: () => {
+          ui.service.value = sv.service;
+          renderOrgPicker();
+          ui.zgid.value = sv.org_id;
+          connect();
+        },
+      }, 'switch to ', h('b', { text: SERVICE_LABELS[sv.service] ?? sv.service })))
   );
   ui.detail.hidden = false;
 
@@ -154,7 +186,10 @@ function onConnected(r) {
 
   setMsg(`Connected in ${r.latency_ms} ms.`, 'good');
   renderStarters(r.suggestions ?? []);
-  localStorage.setItem(SAVED, JSON.stringify({ zgid: r.zgid, ticket: r.ticket_id }));
+  loadDataBrowser();
+  localStorage.setItem(SAVED, JSON.stringify({
+    service: state.service, orgId: r.service_org_id ?? r.zgid, ticket: r.ticket_id,
+  }));
 
   clearInterval(state.timer);
   state.timer = setInterval(tick, 1000);
@@ -175,20 +210,54 @@ function onDisconnected(message) {
   lockAsk('Connect to a customer first…');
   setMsg(message ?? '', message ? 'bad' : null);
   fill(ui.starters, h('li', { class: 'dim small', text: 'Connect to see questions you can ask.' }));
+  state.tables = [];
+  state.explore = { table: null, page: 1 };
+  fill(ui.dataBrowser, h('p', { class: 'dim small', text: 'Connect to browse this customer\u2019s tables.' }));
+}
+
+/**
+ * Offer only the org ids that exist for the chosen service.
+ *
+ * A customer subscribed to CRM and Desk but not Campaigns has no Campaigns org
+ * id at all, so listing them under Campaigns would invite an engineer to try an
+ * id that cannot work. Absence here is the honest signal.
+ */
+function renderOrgPicker() {
+  const service = ui.service.value;
+  const column = SERVICE_COLUMN[service];
+  const available = state.orgs.filter((o) => o[column]);
+
+  ui.orgidLabel.textContent = `${SERVICE_LABELS[service]} Org ID`;
+  ui.zgid.placeholder = available[0]?.[column] ?? 'org id from the ticket';
+
+  fill(ui.zgidPick,
+    h('option', { value: '', text: available.length ? '— pick a customer —' : '— none subscribed —' }),
+    ...available.map((o) => h('option', {
+      value: o[column],
+      text: `${o.ORG_NAME} — ${o[column]}`,
+    })));
+
+  // Clear an id belonging to the service we just left, so it cannot be
+  // submitted against the new one.
+  const stillValid = available.some((o) => o[column] === ui.zgid.value.trim());
+  if (!stillValid) ui.zgid.value = '';
 }
 
 async function connect() {
-  const zgid = ui.zgid.value.trim();
+  const service = ui.service.value;
+  const orgId = ui.zgid.value.trim();
   const ticket = ui.ticket.value.trim();
-  if (!zgid || !ticket) {
-    setMsg('Enter both the ZGID and the ticket you are working on.', 'bad');
-    (zgid ? ui.ticket : ui.zgid).focus();
+  if (!orgId || !ticket) {
+    setMsg(`Enter both the ${SERVICE_LABELS[service]} org id and the ticket you are working on.`, 'bad');
+    (orgId ? ui.ticket : ui.zgid).focus();
     return;
   }
   ui.connectGo.disabled = true;
   setMsg('Checking your entitlement…');
   try {
-    onConnected(await api('/connect', { zgid, ticket_id: ticket }));
+    onConnected(await api('/connect', {
+      service, service_org_id: orgId, ticket_id: ticket,
+    }));
   } catch (err) {
     onDisconnected(err.message);
   } finally {
@@ -212,7 +281,7 @@ function cell(value, isPii) {
  * and a bulk reveal makes it meaningless.
  */
 function renderTable(result) {
-  const { columns, rows, masked = [], highlights = [] } = result;
+  const { columns, rows, masked = [], highlights = [], alwaysOpen = false } = result;
   if (!rows?.length || !columns?.length) return null;
 
   const flagged = new Map(highlights.map((x) => [x.row, x.why]));
@@ -248,9 +317,9 @@ function renderTable(result) {
 
   // The summary is the answer; the grid is the evidence. A long list of rows
   // between the answer and the reply-for-the-customer buries both, so it folds
-  // away - unless it is short, or unless a flagged row IS the answer, in which
-  // case hiding it would hide the point.
-  if (rows.length <= INLINE_ROWS || flagged.size) return grid;
+  // away - unless it is short, or a flagged row IS the answer, or we are in the
+  // data browser, where the rows are the entire point of the panel.
+  if (alwaysOpen || rows.length <= INLINE_ROWS || flagged.size) return grid;
 
   return h('details', { class: 'rows' },
     h('summary', { text: `Show underlying data (${rows.length} rows)` }),
@@ -465,6 +534,110 @@ async function ask(question) {
   }
 }
 
+/* --------------------------------------------------------- data browser */
+
+/**
+ * A window on the customer's actual tables.
+ *
+ * Deliberately the same grid, the same masking and the same Reveal as an
+ * answer: someone demonstrating AskData should see that browsing and answering
+ * obey one rule, not two. Row counts come first so an empty table is visible
+ * before it is opened - "0 rows" as a fact is useful, "0 rows" as a surprise
+ * after a click is not.
+ */
+async function loadDataBrowser() {
+  if (!state.token) {
+    fill(ui.dataBrowser, h('p', { class: 'dim small', text: 'Connect to browse this customer\u2019s tables.' }));
+    return;
+  }
+  fill(ui.dataBrowser, h('p', { class: 'dim small', text: 'Counting rows…' }));
+  try {
+    const r = await api('/explore/summary', { grant_token: state.token });
+    renderTableList(r);
+  } catch (err) {
+    fill(ui.dataBrowser, h('p', { class: 'msg bad', text: err.message }));
+  }
+}
+
+function renderTableList(summary) {
+  const byPack = new Map();
+  for (const t of summary.tables) {
+    if (!byPack.has(t.pack)) byPack.set(t.pack, []);
+    byPack.get(t.pack).push(t);
+  }
+
+  fill(ui.dataBrowser,
+    h('p', { class: 'browse-head' },
+      h('b', { text: summary.org_name }), ' · ',
+      `${SERVICE_LABELS[summary.service] ?? summary.service} · `,
+      h('span', { class: 'dim', text: `${summary.total_rows.toLocaleString('en-US')} rows` })),
+
+    ...[...byPack.entries()].map(([pack, tables]) => h('div', { class: 'browse-group' },
+      h('h4', { text: pack === 'platform' ? 'Users & permissions' : (SERVICE_LABELS[pack] ?? pack) }),
+      ...tables.map((t) => h('button', {
+        class: `browse-row${t.rows === 0 ? ' is-empty' : ''}`,
+        type: 'button',
+        title: t.rows === 0 ? `${t.name} has no rows for this customer` : `Browse ${t.name}`,
+        onclick: () => openTable(t.name),
+      },
+      h('span', { class: 'browse-name', text: t.name }),
+      h('span', { class: 'browse-count', text: t.rows === null ? '—' : t.rows.toLocaleString('en-US') }))))),
+
+    h('p', { class: 'reveal-note', text: 'Rows are masked, paged and audited here exactly as in an answer.' }));
+}
+
+async function openTable(table, page = 1) {
+  state.explore = { table, page };
+  fill(ui.dataBrowser,
+    h('button', { class: 'btn-link', type: 'button', text: '‹ all tables', onclick: loadDataBrowser }),
+    h('p', { class: 'dim small', text: `Loading ${table}…` }));
+
+  try {
+    const r = await api('/explore', {
+      grant_token: state.token, table, page, page_size: 25,
+    });
+    renderTablePage(r);
+  } catch (err) {
+    fill(ui.dataBrowser,
+      h('button', { class: 'btn-link', type: 'button', text: '‹ all tables', onclick: loadDataBrowser }),
+      h('p', { class: 'msg bad', text: err.message }));
+  }
+}
+
+function renderTablePage(r) {
+  const pager = r.total_pages > 1
+    ? h('div', { class: 'pager' },
+        h('button', {
+          class: 'btn-page', type: 'button', text: '‹ prev',
+          disabled: r.page <= 1 ? 'disabled' : null,
+          onclick: () => openTable(r.table, r.page - 1),
+        }),
+        h('span', { class: 'dim small', text: `page ${r.page} of ${r.total_pages}` }),
+        h('button', {
+          class: 'btn-page', type: 'button', text: 'next ›',
+          disabled: r.page >= r.total_pages ? 'disabled' : null,
+          onclick: () => openTable(r.table, r.page + 1),
+        }))
+    : null;
+
+  fill(ui.dataBrowser,
+    h('button', { class: 'btn-link', type: 'button', text: '‹ all tables', onclick: loadDataBrowser }),
+    h('p', { class: 'browse-head' },
+      h('b', { text: r.table }), ' · ',
+      h('span', { class: 'dim', text: `${r.total_rows.toLocaleString('en-US')} rows` })),
+    r.describes ? h('p', { class: 'dim small', text: r.describes }) : null,
+    r.empty_reason
+      ? h('p', { class: 'browse-empty', text: r.empty_reason })
+      : renderTable({ ...r, tables: [r.table], highlights: [], alwaysOpen: true }),
+    pager,
+    r.audit && r.audit.written === false
+      ? h('p', { class: 'audit-gap', text: `Not recorded in the audit log — ${r.audit.error}` })
+      : null,
+    h('details', { class: 'query' },
+      h('summary', { text: 'Show query' }),
+      h('pre', { text: r.zcql })));
+}
+
 /* ----------------------------------------------------------------- panes */
 
 function renderStarters(list) {
@@ -528,12 +701,20 @@ for (const tab of document.querySelectorAll('.tab')) {
 
   try {
     const { orgs } = await api('/orgs');
-    fill(ui.zgids, orgs.map((o) => h('option', { value: o.ZGID, label: `${o.ORG_NAME} (${o.DC})` })));
-  } catch { /* the field still accepts a typed ZGID, which is what matters */ }
+    state.orgs = orgs;
+  } catch { /* the field still accepts a typed org id, which is what matters */ }
+
+  ui.service.addEventListener('change', renderOrgPicker);
+  ui.zgidPick.addEventListener('change', () => {
+    if (ui.zgidPick.value) { ui.zgid.value = ui.zgidPick.value; ui.ticket.focus(); }
+  });
+  renderOrgPicker();
 
   try {
     const saved = JSON.parse(localStorage.getItem(SAVED) || 'null');
-    if (saved?.zgid) { ui.zgid.value = saved.zgid; ui.ticket.value = saved.ticket ?? ''; }
+    if (saved?.service) { ui.service.value = saved.service; renderOrgPicker(); }
+    if (saved?.orgId) ui.zgid.value = saved.orgId;
+    if (saved?.ticket) ui.ticket.value = saved.ticket;
   } catch { /* ignore corrupt state */ }
 
   onDisconnected(null);

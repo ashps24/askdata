@@ -60,6 +60,16 @@ function normaliseTable(pack, table) {
     ),
     /** Columns a WHERE clause may filter on without scanning the table. */
     filterable: columns.filter((c) => c.indexed).map((c) => c.name),
+    /**
+     * May this table be listed whole for one org?
+     *
+     * The guard refuses reads with no indexed filter, because on a records
+     * table that is a full scan against a replica. Configuration tables are
+     * different: there are a handful of departments or segments per customer,
+     * and "list the segments" is a question support actually asks. The table
+     * says which it is rather than the guard guessing from a name.
+     */
+    listable: table.listable === true,
   };
 }
 

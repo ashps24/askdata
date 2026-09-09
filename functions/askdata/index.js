@@ -131,38 +131,69 @@ app.get('/orgs', async (req, res) => {
  * security event, because an engineer probing orgs they have no business in is
  * exactly what a review needs to see.
  */
+const SERVICES = ['crm', 'campaigns', 'desk'];
+
 app.post('/connect', async (req, res) => {
   const started = Date.now();
   const catalystApp = catalyst.initialize(req);
+  const service = String(req.body?.service ?? '').trim().toLowerCase();
+  const serviceOrgId = String(req.body?.service_org_id ?? '').trim();
   const zgid = String(req.body?.zgid ?? '').trim();
   const ticketId = String(req.body?.ticket_id ?? '').trim();
 
+  // Two ways to name a customer. The service form is what an engineer has in
+  // front of them - they picked a service and pasted that service's org id. The
+  // bare ZGID stays supported because tickets, entitlements and every audit row
+  // already written are keyed to it.
+  const byService = Boolean(service) && service !== 'all';
+  const orgIdTyped = byService ? serviceOrgId : zgid;
+
   try {
-    if (!/^[0-9]{4,32}$/.test(zgid)) {
-      return res.status(400).json({ error: 'A ZGID is digits only - copy it from the ticket.' });
+    if (byService && !SERVICES.includes(service)) {
+      return res.status(400).json({
+        error: `Unknown service "${service}". Choose one of: ${SERVICES.join(', ')}.`,
+      });
+    }
+    if (!/^[0-9]{4,32}$/.test(orgIdTyped)) {
+      return res.status(400).json({
+        error: byService
+          ? `A ${service} org id is digits only - copy it from the ticket.`
+          : 'A ZGID is digits only - copy it from the ticket.',
+      });
     }
     if (!/^[A-Za-z0-9_-]{1,32}$/.test(ticketId)) {
       return res.status(400).json({ error: 'Enter the ticket you are working on.' });
     }
 
     const engineer = await grant.identifyEngineer(catalystApp, req);
-    const org = await store.findOrgByZgid(catalystApp, zgid);
+    const org = byService
+      ? await store.findOrgByServiceId(catalystApp, service, serviceOrgId)
+      : await store.findOrgByZgid(catalystApp, zgid);
 
     if (!org) {
-      return res.status(404).json({ error: `No customer found with ZGID ${zgid}.` });
+      return res.status(404).json({
+        error: byService
+          ? `No customer has ${serviceOrgId} as their ${service} org id. Check the id, ` +
+            'and check the ticket is really about that service.'
+          : `No customer found with ZGID ${zgid}.`,
+        code: 'org_not_found',
+      });
     }
 
+    // Entitlements are held against the company's ZGID, not against whichever
+    // service id happened to be typed - one open ticket entitles the engineer to
+    // the customer, and the service only narrows what they can read.
     const entitlement = await store.entitlementFor(catalystApp, {
-      engineerEmail: engineer.email, zgid, ticketId,
+      engineerEmail: engineer.email, zgid: org.ZGID, ticketId,
     });
 
     if (!entitlement) {
       // Logged against the org so a reviewer can see who tried to get in.
       await store.logQuery(catalystApp, {
-        orgId: org.ORG_ID, zgid, ticketId,
+        orgId: org.ORG_ID, zgid: org.ZGID, ticketId,
         engineerId: engineer.id, engineerEmail: engineer.email,
         question: '[connect]', zcql: '', outcome: 'refused',
-        verdict: `SECURITY: no live entitlement for ${engineer.email} on zgid ${zgid} ticket ${ticketId}`,
+        verdict: `SECURITY: no live entitlement for ${engineer.email} on zgid ${org.ZGID} ticket ${ticketId}`,
         rowCount: 0, latencyMs: Date.now() - started, security: true,
       });
       return res.status(403).json({
@@ -173,18 +204,39 @@ app.post('/connect', async (req, res) => {
       });
     }
 
-    const issued = grant.issue({ engineer, org, ticketId });
-    const loaded = packs.forOrg(org);
+    const loaded = byService ? packs.forOrgService(org, service) : packs.forOrg(org);
+    if (!loaded) {
+      return res.status(400).json({
+        error:
+          `${org.ORG_NAME} is not subscribed to ${service}. Their services are: ` +
+          `${org.SUBSCRIBED_PRODUCTS}.`,
+        code: 'service_not_subscribed',
+      });
+    }
+
+    const issued = grant.issue({
+      engineer, org, ticketId,
+      service: byService ? service : 'all',
+      serviceOrgId: byService ? serviceOrgId : org.ZGID,
+    });
 
     res.json({
       grant_token: issued.token,
       org_name: org.ORG_NAME,
       zgid: org.ZGID,
+      service: byService ? service : 'all',
+      service_org_id: byService ? serviceOrgId : org.ZGID,
+      // What else this customer has, so the client can offer the switch without
+      // a second round trip.
+      services_available: serviceOrgIdsFor(org),
       dc: org.DC,
       edition: org.EDITION,
       products: loaded.productKeys,
       pack_labels: loaded.packs.filter((p) => !p.always).map((p) => p.label),
       queryable_tables: loaded.tableNames.length,
+      explorable_tables: loaded.tables.filter((t) => !t.internal).map((t) => ({
+        name: t.name, label: t.label, columns: t.columnNames.length,
+      })),
       ticket_id: ticketId,
       entitled_via: entitlement.via,
       engineer: { email: engineer.email, identified_by: engineer.source },
@@ -211,7 +263,26 @@ async function context(catalystApp, req) {
   if (!org || org.ORG_ID !== claims.orgId) {
     throw new grant.GrantError('That customer is no longer available. Connect again.', { code: 'org_gone' });
   }
-  return { claims, org, loaded: packs.forOrg(org) };
+  // Scope comes from the signed grant, never the request. A session opened on
+  // Desk cannot widen itself to CRM by asking a CRM question.
+  const loaded = claims.service && claims.service !== 'all'
+    ? packs.forOrgService(org, claims.service)
+    : packs.forOrg(org);
+
+  if (!loaded) {
+    throw new grant.GrantError(
+      `${org.ORG_NAME} is no longer subscribed to ${claims.service}. Connect again.`,
+      { code: 'service_gone' }
+    );
+  }
+  return { claims, org, loaded };
+}
+
+/** The org ids this customer's tickets can quote, by service. */
+function serviceOrgIdsFor(org) {
+  return SERVICES
+    .map((key) => ({ service: key, org_id: org[store.SERVICE_COLUMN[key]] ?? null }))
+    .filter((s) => s.org_id);
 }
 
 app.post('/ask', async (req, res) => {
@@ -655,6 +726,145 @@ app.post('/escalate', async (req, res) => {
 });
 
 /* ================================================================== audit */
+
+/* ================================================================ explore */
+
+/**
+ * Browse one table, for the panel that lets someone see what is actually in a
+ * customer's account.
+ *
+ * This is a deliberate second door, and it is worth being explicit about why it
+ * does not undo the PII-dump refusal that /ask enforces. /ask refuses "export
+ * all contact email addresses" because that is an exfiltration shape: unmasked
+ * values, whole table, one request. This endpoint keeps every guarantee that
+ * refusal exists to protect -
+ *
+ *   scoped     ORG_ID from the grant, and only tables in the grant's service
+ *   masked     the same server-side masker, before serialisation
+ *   paged      a hard page ceiling, never the whole table in one response
+ *   audited    every page view writes a SupportQueryLog row
+ *
+ * - so what it offers is orientation, not extraction. Reveal stays per-row and
+ * stays audited.
+ */
+const EXPLORE_PAGE_MAX = 50;
+
+app.post('/explore', async (req, res) => {
+  const started = Date.now();
+  const catalystApp = catalyst.initialize(req);
+  let ctx = null;
+
+  try {
+    ctx = await context(catalystApp, req);
+    const { claims, org, loaded } = ctx;
+
+    const asked = String(req.body?.table ?? '').trim();
+    const tableName = loaded.resolveTableName(asked);
+    if (!tableName) {
+      return res.status(400).json({
+        error: asked
+          ? `"${asked}" is not a table this session can read.`
+          : 'Name a table to browse.',
+        tables: loaded.tables.filter((t) => !t.internal).map((t) => t.name),
+      });
+    }
+
+    const table = loaded.byTable.get(tableName);
+    const size = Math.min(Math.max(Number(req.body?.page_size) || 25, 1), EXPLORE_PAGE_MAX);
+    const page = Math.max(Number(req.body?.page) || 1, 1);
+    const offset = (page - 1) * size;
+
+    const columns = ['ROWID', ...table.columnNames.filter((c) => !c.endsWith('_REF'))];
+    const scoped = `${tableName}.ORG_ID = '${store.q(org.ORG_ID)}'`;
+
+    const zcql =
+      `SELECT ${columns.map((c) => `${tableName}.${c}`).join(', ')} FROM ${tableName} ` +
+      `WHERE ${scoped} ORDER BY ${tableName}.ROWID LIMIT ${offset}, ${size}`;
+
+    const [pageResult, countResult] = await Promise.all([
+      replica.read(catalystApp, org, zcql),
+      replica.read(catalystApp, org,
+        `SELECT COUNT(ROWID) FROM ${tableName} WHERE ${scoped} LIMIT 0, 1`),
+    ]);
+
+    const total = Number(Object.values(countResult.rows[0] ?? {})[0] ?? 0);
+    const { rows, masked } = mask.maskRows(pageResult.rows, [tableName], loaded);
+    const latencyMs = Date.now() - started;
+
+    const audit = await store.logQuery(catalystApp, {
+      orgId: org.ORG_ID, zgid: claims.zgid, ticketId: claims.ticketId,
+      engineerId: claims.engineerId, engineerEmail: claims.engineerEmail,
+      question: `[explore ${tableName} page ${page}]`,
+      zcql, outcome: 'explored',
+      verdict: `browsed ${tableName} rows ${offset + 1}-${offset + rows.length} of ${total}`,
+      rowCount: rows.length, latencyMs,
+    });
+
+    res.json({
+      table: tableName,
+      label: table.label,
+      describes: table.describes ?? null,
+      service: claims.service,
+      org_name: org.ORG_NAME,
+      columns,
+      rows,
+      masked,
+      page,
+      page_size: size,
+      total_rows: total,
+      total_pages: Math.max(Math.ceil(total / size), 1),
+      empty_reason: total === 0
+        ? `No rows in ${tableName} for ${org.ORG_NAME}. The table exists but has not been populated.`
+        : null,
+      zcql,
+      as_of: pageResult.as_of,
+      replica_lag_seconds: pageResult.lag_seconds,
+      dc: pageResult.dc,
+      ...(audit.ok ? {} : { audit: { written: false, error: audit.error } }),
+      latency_ms: latencyMs,
+    });
+  } catch (err) {
+    if (err.name === 'GrantError') {
+      return res.status(err.status ?? 401).json({ error: err.message, code: err.code });
+    }
+    console.error('explore failed:', err);
+    res.status(500).json({ error: 'Could not read that table.' });
+  }
+});
+
+/**
+ * How many rows each table holds for this customer, so the browser can show
+ * what is populated before anyone clicks into an empty table.
+ */
+app.post('/explore/summary', async (req, res) => {
+  const catalystApp = catalyst.initialize(req);
+  try {
+    const { org, loaded, claims } = await context(catalystApp, req);
+    const tables = loaded.tables.filter((t) => !t.internal);
+
+    const counts = await Promise.all(tables.map(async (t) => {
+      try {
+        const out = await replica.read(catalystApp, org,
+          `SELECT COUNT(ROWID) FROM ${t.name} WHERE ${t.name}.ORG_ID = '${store.q(org.ORG_ID)}' LIMIT 0, 1`);
+        return { name: t.name, label: t.label, pack: t.pack, rows: Number(Object.values(out.rows[0] ?? {})[0] ?? 0) };
+      } catch {
+        return { name: t.name, label: t.label, pack: t.pack, rows: null };
+      }
+    }));
+
+    res.json({
+      org_name: org.ORG_NAME, service: claims.service,
+      tables: counts,
+      total_rows: counts.reduce((n, c) => n + (c.rows ?? 0), 0),
+    });
+  } catch (err) {
+    if (err.name === 'GrantError') {
+      return res.status(err.status ?? 401).json({ error: err.message, code: err.code });
+    }
+    console.error('explore summary failed:', err);
+    res.status(500).json({ error: 'Could not summarise the tables.' });
+  }
+});
 
 app.get('/audit', async (req, res) => {
   const catalystApp = catalyst.initialize(req);

@@ -56,26 +56,69 @@ const ago = (days, hour = null, min = 0) => time.daysAgoNaive(days, hour, min);
 
 /* ------------------------------------------------------------------- orgs */
 
-const ORGS = [
-  {
-    ORG_ID: 'ORG-NORTHWIND', ZGID: '60021847312', ORG_NAME: 'Northwind Traders',
-    DC: 'in', EDITION: 'Enterprise', SUBSCRIBED_PRODUCTS: 'crm,campaigns,desk',
-    STATUS: 'active', SIGNED_UP_ON: '2021-03-01',
-    seed: 1001, users: 25, leads: 100,
-  },
-  {
-    ORG_ID: 'ORG-CONTOSO', ZGID: '60021847313', ORG_NAME: 'Contoso Ltd',
-    DC: 'com', EDITION: 'Professional', SUBSCRIBED_PRODUCTS: 'crm,campaigns',
-    STATUS: 'active', SIGNED_UP_ON: '2022-07-14',
-    seed: 2002, users: 25, leads: 40,
-  },
-  {
-    ORG_ID: 'ORG-FABRIKAM', ZGID: '60021847314', ORG_NAME: 'Fabrikam Inc',
-    DC: 'eu', EDITION: 'Enterprise', SUBSCRIBED_PRODUCTS: 'crm,desk',
-    STATUS: 'active', SIGNED_UP_ON: '2020-11-02',
-    seed: 3003, users: 25, leads: 40,
-  },
+/**
+ * The customer companies, and the per-service org ids support engineers are
+ * actually given.
+ *
+ * A customer is one company but several org ids: a ticket about CRM quotes the
+ * CRM org id, a ticket about Desk quotes the Desk portal id, and they are
+ * different numbers. Support engineers copy whichever one is on the ticket in
+ * front of them, so AskData has to accept any of them and resolve them to the
+ * same company - while scoping the answer to the service that was named.
+ *
+ * The three original ZGIDs are preserved as CRM org ids (60021847312 and its
+ * neighbours), so every entitlement, audit row and saved link still resolves.
+ */
+const COMPANY_SPECS = [
+  ['ORG-NORTHWIND', 'Northwind Traders',    'in',  'Enterprise',   'crm,campaigns,desk', '2021-03-01', 100],
+  ['ORG-CONTOSO',   'Contoso Ltd',          'com', 'Professional', 'crm,campaigns',      '2022-07-14', 40],
+  ['ORG-FABRIKAM',  'Fabrikam Inc',         'eu',  'Enterprise',   'crm,desk',           '2020-11-02', 40],
+  ['ORG-ZYLKER',    'Zylker Corp',          'in',  'Enterprise',   'crm,campaigns,desk', '2019-06-18', 90],
+  ['ORG-ACME',      'Acme Retail Group',    'com', 'Enterprise',   'crm,desk',           '2021-09-30', 70],
+  ['ORG-VERTEX',    'Vertex Financial',     'au',  'Professional', 'crm',                '2023-01-11', 50],
+  ['ORG-HELIOS',    'Helios Manufacturing', 'jp',  'Enterprise',   'crm,campaigns,desk', '2018-04-05', 80],
+  ['ORG-MERIDIAN',  'Meridian Healthcare',  'ca',  'Professional', 'crm,desk',           '2022-02-22', 45],
+  ['ORG-SOLSTICE',  'Solstice Media',       'eu',  'Standard',     'crm,campaigns',      '2023-08-07', 35],
+  ['ORG-IRONCLAD',  'Ironclad Logistics',   'uae', 'Enterprise',   'crm,campaigns,desk', '2020-01-20', 60],
 ];
+
+/** Distinct number space per service, so an id says which service it belongs to. */
+const SERVICE_PREFIX = { crm: '600218', campaigns: '700315', desk: '800427' };
+
+const ORGS = COMPANY_SPECS.map(
+  ([ORG_ID, ORG_NAME, DC, EDITION, SUBSCRIBED_PRODUCTS, SIGNED_UP_ON, leads], i) => {
+    const tail = String(47312 + i);
+    const products = SUBSCRIBED_PRODUCTS.split(',');
+    const serviceOrgIds = {};
+    for (const service of products) {
+      if (SERVICE_PREFIX[service]) serviceOrgIds[service] = SERVICE_PREFIX[service] + tail;
+    }
+    return {
+      ORG_ID, ORG_NAME, DC, EDITION, SUBSCRIBED_PRODUCTS, SIGNED_UP_ON,
+      STATUS: 'active',
+      // The CRM org id doubles as the company's ZGID, which is what every
+      // entitlement and audit row was already written against.
+      ZGID: SERVICE_PREFIX.crm + tail,
+      CRM_ORG_ID: serviceOrgIds.crm ?? null,
+      CMP_ORG_ID: serviceOrgIds.campaigns ?? null,
+      DESK_ORG_ID: serviceOrgIds.desk ?? null,
+      serviceOrgIds,
+      index: i + 1,
+      seed: 1001 + i * 1001,
+      users: 12,
+      leads,
+    };
+  }
+);
+
+/** service org id (any service) -> the company it belongs to. */
+function orgByServiceId(serviceOrgId, service = null) {
+  const wanted = String(serviceOrgId ?? '').trim();
+  return ORGS.find((o) =>
+    service
+      ? o.serviceOrgIds[service] === wanted
+      : Object.values(o.serviceOrgIds).includes(wanted) || o.ZGID === wanted) ?? null;
+}
 
 const ENGINEER = process.env.ASKDATA_DEMO_ENGINEER || 'ashwin.p@zohocorp.com';
 
@@ -144,6 +187,7 @@ function buildPlatform() {
       ORG_ID: org.ORG_ID, ZGID: org.ZGID, ORG_NAME: org.ORG_NAME, DC: org.DC,
       EDITION: org.EDITION, SUBSCRIBED_PRODUCTS: org.SUBSCRIBED_PRODUCTS,
       STATUS: org.STATUS, SIGNED_UP_ON: org.SIGNED_UP_ON,
+      CRM_ORG_ID: org.CRM_ORG_ID, CMP_ORG_ID: org.CMP_ORG_ID, DESK_ORG_ID: org.DESK_ORG_ID,
     });
 
     // The engineer holds an open ticket for every org, plus one elevated grant
@@ -168,7 +212,7 @@ function buildPlatform() {
     }
 
     /* -- users ------------------------------------------------------- */
-    const prefix = org.ORG_ID === 'ORG-NORTHWIND' ? 1 : org.ORG_ID === 'ORG-CONTOSO' ? 2 : 3;
+    const prefix = org.index;
     const users = [];
     for (let i = 1; i <= org.users; i++) {
       const id = `U-${prefix}0${String(i).padStart(2, '0')}`;
@@ -280,7 +324,7 @@ function buildCrm() {
 
   for (const org of ORGS) {
     const r = rng(org.seed + 11);
-    const prefix = org.ORG_ID === 'ORG-NORTHWIND' ? 1 : org.ORG_ID === 'ORG-CONTOSO' ? 2 : 3;
+    const prefix = org.index;
     const uid = (n) => `U-${prefix}0${String(n).padStart(2, '0')}`;
 
     /* -- accounts. The org's own name is included so "contacts at
@@ -542,7 +586,7 @@ function buildAudit() {
 
   for (const org of ORGS) {
     const r = rng(org.seed + 44);
-    const prefix = org.ORG_ID === 'ORG-NORTHWIND' ? 1 : org.ORG_ID === 'ORG-CONTOSO' ? 2 : 3;
+    const prefix = org.index;
     const uid = (n) => `U-${prefix}0${String(n).padStart(2, '0')}`;
     const products = org.SUBSCRIBED_PRODUCTS.split(',');
 
@@ -769,4 +813,5 @@ async function backfillRefs(catalystApp) {
   };
 }
 
-module.exports = { seed, backfillRefs, canWrite, AUDIT_PER_ORG, STAGES, ORGS, ENGINEER, buildPlatform, buildCrm, buildCampaigns, buildDesk, buildAudit };
+module.exports = { seed, backfillRefs, canWrite, AUDIT_PER_ORG, STAGES, ORGS, ENGINEER,
+  orgByServiceId, SERVICE_PREFIX, buildPlatform, buildCrm, buildCampaigns, buildDesk, buildAudit };

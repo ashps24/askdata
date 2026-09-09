@@ -25,6 +25,7 @@ module.exports = {
   tables: [
     {
       name: 'DESK_Departments',
+      listable: true,
       label: 'departments',
       describes: 'A Desk department, i.e. a ticket queue with its own members.',
       columns: [

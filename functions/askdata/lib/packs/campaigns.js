@@ -19,6 +19,7 @@ module.exports = {
   tables: [
     {
       name: 'CMP_Lists',
+      listable: true,
       label: 'mailing lists',
       describes: 'A subscriber list. Segments and campaigns both hang off it.',
       columns: [
@@ -34,6 +35,7 @@ module.exports = {
 
     {
       name: 'CMP_Segments',
+      listable: true,
       label: 'list segments',
       describes:
         'A saved filter over a list. Creating one needs the campaigns.segments.create ' +
@@ -55,6 +57,7 @@ module.exports = {
 
     {
       name: 'CMP_Campaigns',
+      listable: true,
       label: 'campaigns',
       describes: 'An email campaign sent to a list.',
       columns: [

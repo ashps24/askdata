@@ -58,7 +58,7 @@ function sign(payloadJson) {
 }
 
 /** Issue a grant. `payload` must already have been authorised by `entitlement`. */
-function issue({ engineer, org, ticketId }) {
+function issue({ engineer, org, ticketId, service = 'all', serviceOrgId = null }) {
   const now = Math.floor(Date.now() / 1000);
   const claims = {
     eid: engineer.id,
@@ -69,6 +69,11 @@ function issue({ engineer, org, ticketId }) {
     dc: org.DC,
     products: String(org.SUBSCRIBED_PRODUCTS ?? ''),
     ticket: String(ticketId),
+    // The service the engineer picked, and the id they actually typed. Both are
+    // signed: which service a session may read is a scope decision, so it
+    // belongs in the grant next to the tenant and never in a request body.
+    service: String(service ?? 'all'),
+    svcid: serviceOrgId ? String(serviceOrgId) : null,
     iat: now,
     exp: now + TTL_SECONDS,
   };
@@ -127,6 +132,8 @@ function verify(token) {
     dc: claims.dc,
     products: claims.products,
     ticketId: claims.ticket,
+    service: claims.service ?? 'all',
+    serviceOrgId: claims.svcid ?? null,
     issuedAt: claims.iat,
     expiresAt: claims.exp,
     secondsLeft: claims.exp - now,
