@@ -43,7 +43,7 @@ module.exports = {
         { name: 'SEGMENT_ID', type: 'varchar', max_length: 32, indexed: true },
         { name: 'LIST_ID', type: 'varchar', max_length: 32, indexed: true },
         { name: 'SEGMENT_NAME', type: 'varchar', max_length: 160, indexed: true },
-        { name: 'CRITERIA', type: 'varchar', max_length: 300 },
+        { name: 'CRITERIA', type: 'varchar', max_length: 255 },
         { name: 'CREATED_BY', type: 'varchar', max_length: 32, indexed: true },
         { name: 'CREATED_ON', type: 'datetime', indexed: true },
       ],

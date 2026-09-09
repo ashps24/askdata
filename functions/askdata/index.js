@@ -82,6 +82,14 @@ app.get('/health', (req, res) => {
     },
     rules: rules.RULES.length,
     grantTtlSeconds: grant.TTL_SECONDS,
+    // Outside Production an engineer identity may come from a header, so the
+    // hosted client can be used without a Catalyst sign-in. Advertised rather
+    // than assumed, so the client shows it as the stand-in that it is.
+    devIdentity: {
+      allowed: process.env.ASKDATA_ENV !== 'Production',
+      engineer: process.env.ASKDATA_DEMO_ENGINEER || null,
+    },
+    requireAudit: store.requireAudit(),
   });
 });
 
@@ -235,9 +243,33 @@ app.post('/ask', async (req, res) => {
 
   const finish = async (payload, log) => {
     const latencyMs = Date.now() - started;
-    await store.logQuery(catalystApp, { ...base, ...log, latencyMs });
+    const audit = await store.logQuery(catalystApp, { ...base, ...log, latencyMs });
+
+    // Fail closed: an answer with no audit row is the one outcome this tool
+    // promises is impossible. In development it is downgraded to a visible
+    // warning so the app still demonstrates - see store.requireAudit.
+    if (!audit.ok && store.requireAudit()) {
+      return res.status(503).json({
+        mode: 'refused',
+        reason:
+          'I could not write the audit record for this query, so I have not run it. ' +
+          'Every AskData query has to be auditable. Please retry, and raise this with ' +
+          'the platform team if it persists.',
+        code: 'audit_unavailable',
+        audit: { written: false, error: audit.error },
+        latency_ms: latencyMs,
+      });
+    }
+
     return res.status(payload.status ?? 200).json({
       ...payload.body,
+      ...(audit.ok ? {} : {
+        audit: {
+          written: false,
+          warning: 'This query was NOT recorded in the audit log. Do not rely on it for a review.',
+          error: audit.error,
+        },
+      }),
       grant: { expires_at: new Date(claims.expiresAt * 1000).toISOString(), seconds_left: claims.secondsLeft },
       latency_ms: latencyMs,
     });
@@ -270,7 +302,7 @@ app.post('/ask', async (req, res) => {
     }
 
     /* -- 2. is it about the customer's data at all? --------------------- */
-    if (rules.offTopic(question)) {
+    if (rules.offTopic(question, loaded)) {
       return finish({
         body: {
           mode: 'clarify',
@@ -312,10 +344,37 @@ app.post('/ask', async (req, res) => {
       console.warn(`name resolution skipped: ${err.message}`);
     }
 
+    // A question ABOUT a person that never names one. Asking is the only honest
+    // move: guessing would breach rule 4, and refusing sends the engineer back
+    // to the debug queue over a missing word.
+    if (!person && rules.vaguePersonReference(question)) {
+      const target = rules.permissionTarget(question);
+      return finish({
+        body: {
+          mode: 'clarify',
+          question:
+            `Which user? Give me their user id, full name or email address and I will check ` +
+            `${target ? `whether they have ${target.key}` : 'it'} on ${org.ORG_NAME}.`,
+          candidates: [],
+          // Both are runnable as-is; the engineer swaps the id for the one on
+          // the ticket. A placeholder like "<user email>" would be a suggestion
+          // that fails when clicked.
+          suggestions: [
+            people.replaceVaguePerson(question, 'U-2004'),
+            target ? `does U-2004 have ${target.key}` : null,
+          ].filter(Boolean),
+        },
+      }, {
+        outcome: 'clarify', zcql: '', rowCount: 0,
+        verdict: 'person referred to but not named',
+      });
+    }
+
     let account = null;
+    let accounts = [];
     if (/\b(?:at|for|of|in)\s+[A-Z]/.test(question) || /contact|account|company/i.test(question)) {
       try {
-        const accounts = replica.flattenRows(await catalystApp.zcql().executeZCQLQuery(
+        accounts = replica.flattenRows(await catalystApp.zcql().executeZCQLQuery(
           `SELECT ACCOUNT_ID, ACCOUNT_NAME FROM CRM_Accounts WHERE ORG_ID = '${store.q(org.ORG_ID)}' LIMIT 0, 300`
         ));
         const hit = people.resolveLabel(question, accounts, 'ACCOUNT_NAME');
@@ -333,6 +392,29 @@ app.post('/ask', async (req, res) => {
         }
         if (hit) account = hit.matches[0];
       } catch { /* CRM not subscribed, or no accounts - not fatal */ }
+    }
+
+    // A name the question filters on that matched nothing. Answering anyway
+    // means answering a DIFFERENT question - the org-wide one - and saying so
+    // with a confident number. See rules.namedEntity.
+    if (!account && !person) {
+      const named = rules.namedEntity(question, loaded);
+      if (named) {
+        const near = people.nearestLabels(named, accounts, 'ACCOUNT_NAME', 3);
+        return finish({
+          body: {
+            mode: 'clarify',
+            question:
+              `I could not find "${named}" in ${org.ORG_NAME}` +
+              `${near.length ? '. Did you mean one of these?' : ', so I have not answered - the count for the whole account would be a different question.'}`,
+            candidates: near.map((a) => ({ account_id: a.ACCOUNT_ID, account_name: a.ACCOUNT_NAME })),
+            suggestions: near.map((a) => people.replaceTerm(question, named, a.ACCOUNT_NAME)),
+          },
+        }, {
+          outcome: 'clarify', zcql: '', rowCount: 0,
+          verdict: `named entity "${named}" resolved to nothing`,
+        });
+      }
     }
 
     const resolved = { person, account };
@@ -606,6 +688,7 @@ app.post('/admin/seed', async (req, res) => {
     const out = await require('./lib/seed').seed(catalyst.initialize(req), {
       only: req.body?.only ?? null,
       wipe: req.body?.wipe !== false,
+      auditPerOrg: req.body?.audit_per_org ?? null,
     });
     res.json({ ok: true, ms: Date.now() - started, ...out });
   } catch (err) {

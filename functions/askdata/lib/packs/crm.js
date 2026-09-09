@@ -140,7 +140,7 @@ module.exports = {
         { name: 'MODULE', type: 'varchar', max_length: 60, indexed: true },
         { name: 'FORMAT', type: 'varchar', max_length: 10, values: ['csv', 'xls', 'ics'] },
         { name: 'ROW_COUNT', type: 'int', indexed: true },
-        { name: 'FILTER_APPLIED', type: 'varchar', max_length: 300, describe: 'Null or None means the whole module was taken' },
+        { name: 'FILTER_APPLIED', type: 'varchar', max_length: 255, describe: 'Null or None means the whole module was taken' },
         // Deliberately NOT pii: question 3 needs the IP visible to distinguish a
         // 4,000-row export from an unfamiliar address from three routine ones.
         { name: 'IP_ADDRESS', type: 'varchar', max_length: 45 },
@@ -163,8 +163,8 @@ module.exports = {
         { name: 'MODULE', type: 'varchar', max_length: 60, indexed: true },
         { name: 'RECORD_ID', type: 'varchar', max_length: 40, indexed: true },
         { name: 'FIELD_NAME', type: 'varchar', max_length: 60, indexed: true },
-        { name: 'OLD_VALUE', type: 'varchar', max_length: 300 },
-        { name: 'NEW_VALUE', type: 'varchar', max_length: 300 },
+        { name: 'OLD_VALUE', type: 'varchar', max_length: 255 },
+        { name: 'NEW_VALUE', type: 'varchar', max_length: 255 },
         { name: 'CHANGED_BY', type: 'varchar', max_length: 32, indexed: true },
         { name: 'CHANGED_AT', type: 'datetime', indexed: true },
       ],

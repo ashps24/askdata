@@ -179,3 +179,35 @@ function forget(orgId) {
 }
 
 module.exports = { roster, findPeople, clarifyCandidates, resolveLabel, replaceTerm, normalise, hasWord, forget };
+
+/** "my user cannot create a segment" -> "U-2004 cannot create a segment" */
+function replaceVaguePerson(question, replacement) {
+  const re =
+    /\b(?:my|the|this|that|an?|their|his|her|its|our|customer'?s?|client'?s?)\s+(?:user|users|agent|agents|employee|employees|person|people|admin|admins|rep|reps|member|members|account holder)\b/i;
+  return re.test(question) ? String(question).replace(re, replacement) : null;
+}
+
+module.exports.replaceVaguePerson = replaceVaguePerson;
+
+/**
+ * The closest few labels to a name that did not resolve, by shared words then
+ * shared prefix. Good enough to turn "I could not find Aurora Systems" into a
+ * one-click "did you mean Cobalt Systems?", which is the difference between a
+ * dead end and a corrected question.
+ */
+function nearestLabels(name, rows, column, limit = 3) {
+  const wanted = normalise(name).split(' ').filter(Boolean);
+  return rows
+    .map((row) => {
+      const words = normalise(row[column] ?? '').split(' ').filter(Boolean);
+      const shared = words.filter((w) => wanted.includes(w)).length;
+      const prefix = words.some((w) => wanted.some((t) => w.slice(0, 4) === t.slice(0, 4))) ? 1 : 0;
+      return { row, score: shared * 2 + prefix };
+    })
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((s) => s.row);
+}
+
+module.exports.nearestLabels = nearestLabels;

@@ -44,7 +44,9 @@ const int = (r, lo, hi) => lo + Math.floor(r() * (hi - lo + 1));
 
 const B = (v) => (v ? 'true' : 'false');
 const dt = (d) => time.istNaive(d);
-const day = (d) => time.istDay(d);
+// `ago()` already returns an IST naive string, so day() truncates rather than
+// converting. Converting again would shift by 5:30 a second time.
+const day = (v) => (typeof v === 'string' ? v.slice(0, 10) : time.istDay(v));
 /**
  * `days` ago at a given IST wall-clock time, as a naive string.
  * The hour is set on the IST representation, not on UTC - otherwise the 02:14
@@ -149,19 +151,19 @@ function buildPlatform() {
     out.SupportEntitlements.push({
       ORG_ID: org.ORG_ID, ENTITLEMENT_ID: `E-${org.ZGID}-1`, ENGINEER_EMAIL: ENGINEER,
       ZGID: org.ZGID, TICKET_ID: `TKT-${org.ZGID.slice(-4)}`, KIND: 'open_ticket',
-      TICKET_STATUS: 'open', VALID_FROM: dt(ago(30)), VALID_UNTIL: dt(ago(-30)),
+      TICKET_STATUS: 'open', VALID_FROM: ago(30), VALID_UNTIL: ago(-30),
     });
     // A closed ticket, to prove a closed one does NOT entitle.
     out.SupportEntitlements.push({
       ORG_ID: org.ORG_ID, ENTITLEMENT_ID: `E-${org.ZGID}-2`, ENGINEER_EMAIL: ENGINEER,
       ZGID: org.ZGID, TICKET_ID: `TKT-CLOSED-${org.ZGID.slice(-4)}`, KIND: 'open_ticket',
-      TICKET_STATUS: 'closed', VALID_FROM: dt(ago(60)), VALID_UNTIL: dt(ago(40)),
+      TICKET_STATUS: 'closed', VALID_FROM: ago(60), VALID_UNTIL: ago(40),
     });
     if (org.ORG_ID === 'ORG-NORTHWIND') {
       out.SupportEntitlements.push({
         ORG_ID: org.ORG_ID, ENTITLEMENT_ID: `E-${org.ZGID}-3`, ENGINEER_EMAIL: ENGINEER,
         ZGID: org.ZGID, TICKET_ID: 'ANY', KIND: 'elevated_access',
-        TICKET_STATUS: 'open', VALID_FROM: dt(ago(1)), VALID_UNTIL: dt(ago(-2)),
+        TICKET_STATUS: 'open', VALID_FROM: ago(1), VALID_UNTIL: ago(-2),
       });
     }
 
@@ -187,7 +189,7 @@ function buildPlatform() {
       users.push({
         ORG_ID: org.ORG_ID, USER_ID: id, ZUID: `${6000000 + prefix * 10000 + i}`,
         FULL_NAME: name, EMAIL: emailFor(name, org), STATUS: status,
-        LAST_LOGIN: dt(ago(lastLoginDays, int(r, 8, 19), int(r, 0, 59))),
+        LAST_LOGIN: ago(lastLoginDays, int(r, 8, 19), int(r, 0, 59)),
         CREATED_ON: day(ago(int(r, 200, 1200))),
       });
     }
@@ -285,25 +287,29 @@ function buildCrm() {
           <customer>" resolves to a real account rather than a whole-table
           dump the guard would (correctly) refuse. -------------------- */
     const accountNames = [org.ORG_NAME, ...COMPANIES.slice(0, 11)];
-    for (const [i, name] of accountNames.entries()) {
-      out.CRM_Accounts.push({
-        ORG_ID: org.ORG_ID, ACCOUNT_ID: `A-${prefix}${String(i + 1).padStart(3, '0')}`,
-        ACCOUNT_NAME: name, INDUSTRY: pick(r, INDUSTRIES),
-        OWNER_ID: uid(int(r, 1, org.users)), CREATED_ON: dt(ago(int(r, 100, 900))),
-      });
-    }
+
+    // Built into a LOCAL array, then appended. `out.CRM_Accounts` accumulates
+    // across orgs, so indexing it directly handed the second and third orgs'
+    // contacts and deals the FIRST org's ACCOUNT_IDs - a cross-tenant smear
+    // that the ref backfill then reported as 70 unresolved rows.
+    const accounts = accountNames.map((name, i) => ({
+      ORG_ID: org.ORG_ID, ACCOUNT_ID: `A-${prefix}${String(i + 1).padStart(3, '0')}`,
+      ACCOUNT_NAME: name, INDUSTRY: pick(r, INDUSTRIES),
+      OWNER_ID: uid(int(r, 1, org.users)), CREATED_ON: ago(int(r, 100, 900)),
+    }));
+    out.CRM_Accounts.push(...accounts);
 
     /* -- contacts ---------------------------------------------------- */
     for (let i = 1; i <= (org.ORG_ID === 'ORG-NORTHWIND' ? 40 : 20); i++) {
       const name = `${FIRST[(i * 3) % FIRST.length]} ${LAST[(i * 11) % LAST.length]}`;
-      const acct = out.CRM_Accounts[i % accountNames.length];
+      const acct = accounts[i % accounts.length];
       out.CRM_Contacts.push({
         ORG_ID: org.ORG_ID, CONTACT_ID: `C-${prefix}${String(i).padStart(3, '0')}`,
         ACCOUNT_ID: acct.ACCOUNT_ID, FULL_NAME: name,
         EMAIL: `${name.toLowerCase().replace(/\s+/g, '.')}@${acct.ACCOUNT_NAME.split(' ')[0].toLowerCase()}.example.com`,
         PHONE: `+91 9${int(r, 1000, 9999)} ${int(r, 10000, 99999)}`,
         TITLE: pick(r, ['Director', 'Manager', 'Head of Ops', 'Analyst', 'VP', 'Consultant']),
-        OWNER_ID: uid(int(r, 1, org.users)), CREATED_ON: dt(ago(int(r, 20, 700))),
+        OWNER_ID: uid(int(r, 1, org.users)), CREATED_ON: ago(int(r, 20, 700)),
       });
     }
 
@@ -361,14 +367,14 @@ function buildCrm() {
 
     /* -- deals ------------------------------------------------------- */
     for (let i = 1; i <= (org.ORG_ID === 'ORG-NORTHWIND' ? 30 : 15); i++) {
-      const acct = out.CRM_Accounts[i % accountNames.length];
+      const acct = accounts[i % accounts.length];
       out.CRM_Deals.push({
         ORG_ID: org.ORG_ID, DEAL_ID: `D-${prefix}${String(i).padStart(3, '0')}`,
         DEAL_NAME: `${acct.ACCOUNT_NAME} - ${pick(r, ['Renewal', 'Expansion', 'New Licence', 'Upgrade'])}`,
         ACCOUNT_ID: acct.ACCOUNT_ID, STAGE: pick(r, DEAL_STAGES),
         AMOUNT: int(r, 40, 900) * 1000,
         CLOSING_DATE: day(ago(-int(r, 5, 120))),
-        OWNER_ID: uid(int(r, 1, org.users)), CREATED_ON: dt(ago(int(r, 10, 300))),
+        OWNER_ID: uid(int(r, 1, org.users)), CREATED_ON: ago(int(r, 10, 300)),
       });
     }
 
@@ -380,12 +386,12 @@ function buildCrm() {
     if (org.ORG_ID === 'ORG-NORTHWIND') {
       const ap = 'U-1007';
       out.CRM_ExportJobs.push(
-        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1001', USER_ID: ap, MODULE: 'Leads', FORMAT: 'csv', ROW_COUNT: 48, FILTER_APPLIED: 'Lead Status = Qualified', IP_ADDRESS: '10.14.2.8', STATUS: 'completed', EXPORTED_AT: dt(ago(20, 15, 31)) },
-        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1002', USER_ID: ap, MODULE: 'Deals', FORMAT: 'xls', ROW_COUNT: 12, FILTER_APPLIED: 'Stage = Proposal', IP_ADDRESS: '10.14.2.8', STATUS: 'completed', EXPORTED_AT: dt(ago(29, 11, 5)) },
-        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1003', USER_ID: ap, MODULE: 'Leads', FORMAT: 'csv', ROW_COUNT: 30, FILTER_APPLIED: 'Owner = me', IP_ADDRESS: '10.14.2.8', STATUS: 'completed', EXPORTED_AT: dt(ago(43, 17, 44)) },
-        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1004', USER_ID: ap, MODULE: 'Contacts', FORMAT: 'csv', ROW_COUNT: 4000, FILTER_APPLIED: null, IP_ADDRESS: '203.0.113.77', STATUS: 'completed', EXPORTED_AT: dt(ago(7, 2, 14)) },
+        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1001', USER_ID: ap, MODULE: 'Leads', FORMAT: 'csv', ROW_COUNT: 48, FILTER_APPLIED: 'Lead Status = Qualified', IP_ADDRESS: '10.14.2.8', STATUS: 'completed', EXPORTED_AT: ago(20, 15, 31) },
+        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1002', USER_ID: ap, MODULE: 'Deals', FORMAT: 'xls', ROW_COUNT: 12, FILTER_APPLIED: 'Stage = Proposal', IP_ADDRESS: '10.14.2.8', STATUS: 'completed', EXPORTED_AT: ago(29, 11, 5) },
+        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1003', USER_ID: ap, MODULE: 'Leads', FORMAT: 'csv', ROW_COUNT: 30, FILTER_APPLIED: 'Owner = me', IP_ADDRESS: '10.14.2.8', STATUS: 'completed', EXPORTED_AT: ago(43, 17, 44) },
+        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1004', USER_ID: ap, MODULE: 'Contacts', FORMAT: 'csv', ROW_COUNT: 4000, FILTER_APPLIED: null, IP_ADDRESS: '203.0.113.77', STATUS: 'completed', EXPORTED_AT: ago(7, 2, 14) },
         // Ashwin Menon: ordinary activity only.
-        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1005', USER_ID: 'U-1019', MODULE: 'Leads', FORMAT: 'csv', ROW_COUNT: 22, FILTER_APPLIED: 'Created this month', IP_ADDRESS: '10.14.2.31', STATUS: 'completed', EXPORTED_AT: dt(ago(12, 10, 2)) },
+        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1005', USER_ID: 'U-1019', MODULE: 'Leads', FORMAT: 'csv', ROW_COUNT: 22, FILTER_APPLIED: 'Created this month', IP_ADDRESS: '10.14.2.31', STATUS: 'completed', EXPORTED_AT: ago(12, 10, 2) },
       );
     }
     const startIdx = out.CRM_ExportJobs.filter((e) => e.ORG_ID === org.ORG_ID).length;
@@ -396,7 +402,7 @@ function buildCrm() {
         FORMAT: pick(r, ['csv', 'xls']), ROW_COUNT: int(r, 5, 220),
         FILTER_APPLIED: pick(r, ['Owner = me', 'Created this month', 'Stage = Proposal', 'Status = Active']),
         IP_ADDRESS: `10.${int(r, 10, 40)}.${int(r, 1, 250)}.${int(r, 1, 250)}`,
-        STATUS: 'completed', EXPORTED_AT: dt(ago(int(r, 1, 88), int(r, 9, 18), int(r, 0, 59))),
+        STATUS: 'completed', EXPORTED_AT: ago(int(r, 1, 88), int(r, 9, 18), int(r, 0, 59)),
       });
     }
 
@@ -414,7 +420,7 @@ function buildCrm() {
         ORG_ID: org.ORG_ID, HISTORY_ID: `H-${prefix}${String(100 + i)}`, MODULE: 'Leads',
         RECORD_ID: lead.LEAD_ID, FIELD_NAME: pick(r, ['LEAD_STATUS', 'OWNER_ID']),
         OLD_VALUE: pick(r, STATUSES), NEW_VALUE: pick(r, STATUSES),
-        CHANGED_BY: uid(int(r, 1, org.users)), CHANGED_AT: dt(ago(int(r, 2, 60), int(r, 9, 18), 0)),
+        CHANGED_BY: uid(int(r, 1, org.users)), CHANGED_AT: ago(int(r, 2, 60), int(r, 9, 18), 0),
       });
     }
   }
@@ -436,7 +442,7 @@ function buildCampaigns() {
         LIST_NAME: pick(r, ['Newsletter Subscribers', 'Trade Show Leads', 'Existing Customers',
           'Webinar Registrants', 'Partner Contacts', 'Dormant Accounts']) + ` ${i}`,
         CONTACT_COUNT: int(r, 200, 9000), OWNER_ID: uid(int(r, 1, 20)),
-        CREATED_ON: dt(ago(int(r, 30, 500))),
+        CREATED_ON: ago(int(r, 30, 500)),
       });
     }
     for (let i = 1; i <= 8; i++) {
@@ -445,7 +451,7 @@ function buildCampaigns() {
         ORG_ID: org.ORG_ID, SEGMENT_ID: `S-${prefix}${String(i).padStart(2, '0')}`,
         LIST_ID: l.LIST_ID, SEGMENT_NAME: `${['Opened last 30d', 'Never opened', 'Clicked twice', 'India only', 'Enterprise only', 'Bounced', 'High intent', 'Cold'][i - 1]}`,
         CRITERIA: pick(r, ['opens > 0', 'opens = 0', 'clicks >= 2', 'country = IN', 'employees > 500', 'bounced = true']),
-        CREATED_BY: uid(int(r, 1, 20)), CREATED_ON: dt(ago(int(r, 10, 300))),
+        CREATED_BY: uid(int(r, 1, 20)), CREATED_ON: ago(int(r, 10, 300)),
       });
     }
     for (let i = 1; i <= 10; i++) {
@@ -456,7 +462,7 @@ function buildCampaigns() {
         LIST_ID: l.LIST_ID, STATUS: i > 8 ? 'draft' : 'sent',
         SENT_COUNT: i > 8 ? 0 : int(r, 150, 8000),
         OPEN_RATE: i > 8 ? 0 : Number((r() * 45 + 8).toFixed(2)),
-        SENT_ON: i > 8 ? null : dt(ago(int(r, 3, 200))),
+        SENT_ON: i > 8 ? null : ago(int(r, 3, 200)),
         CREATED_BY: uid(int(r, 1, 20)),
       });
     }
@@ -476,7 +482,7 @@ function buildDesk() {
     for (const [i, name] of names.entries()) {
       out.DESK_Departments.push({
         ORG_ID: org.ORG_ID, DEPARTMENT_ID: `DP-${prefix}${String(i + 1).padStart(2, '0')}`,
-        DEPARTMENT_NAME: name, IS_DEFAULT: B(i === 0), CREATED_ON: dt(ago(int(r, 300, 900))),
+        DEPARTMENT_NAME: name, IS_DEFAULT: B(i === 0), CREATED_ON: ago(int(r, 300, 900)),
       });
     }
     const deptOf = (n) => out.DESK_Departments.find((d) => d.ORG_ID === org.ORG_ID && d.DEPARTMENT_NAME === n);
@@ -516,12 +522,19 @@ function buildDesk() {
         TICKET_PRIORITY: pick(r, ['Low', 'Medium', 'High', 'Urgent']),
         ASSIGNEE_ID: uid(int(r, 1, 18)),
         CONTACT_EMAIL: `customer${i}@${COMPANIES[i % COMPANIES.length].split(' ')[0].toLowerCase()}.example.com`,
-        CREATED_ON: dt(ago(int(r, 1, 120), int(r, 8, 19), int(r, 0, 59))),
+        CREATED_ON: ago(int(r, 1, 120), int(r, 8, 19), int(r, 0, 59)),
       });
     }
   }
   return out;
 }
+
+/**
+ * Events per org. The design asks for 400+; it is adjustable so a re-seed can
+ * fit a reduced write allowance, at the cost of a thinner audit trail. Changing
+ * it is a deliberate trade-off, not a default.
+ */
+const AUDIT_PER_ORG = { value: 420 };
 
 function buildAudit() {
   const out = { AuditEvents: [] };
@@ -533,7 +546,7 @@ function buildAudit() {
     const uid = (n) => `U-${prefix}0${String(n).padStart(2, '0')}`;
     const products = org.SUBSCRIBED_PRODUCTS.split(',');
 
-    for (let i = 1; i <= 420; i++) {
+    for (let i = 1; i <= AUDIT_PER_ORG.value; i++) {
       const type = pick(r, TYPES);
       const product = pick(r, products);
       out.AuditEvents.push({
@@ -545,7 +558,7 @@ function buildAudit() {
         DETAILS: type === 'permission_change' ? 'profile permission toggled'
           : type === 'export' ? `exported ${int(r, 5, 500)} rows` : '',
         IP_ADDRESS: `10.${int(r, 10, 40)}.${int(r, 1, 250)}.${int(r, 1, 250)}`,
-        OCCURRED_AT: dt(ago(int(r, 0, 90), int(r, 0, 23), int(r, 0, 59))),
+        OCCURRED_AT: ago(int(r, 0, 90), int(r, 0, 23), int(r, 0, 59)),
       });
     }
 
@@ -556,7 +569,7 @@ function buildAudit() {
         ORG_ID: org.ORG_ID, EVENT_ID: 'EV-1-SPECIAL', PRODUCT: 'crm', USER_ID: 'U-1007',
         EVENT_TYPE: 'export', MODULE: 'Contacts', RECORD_ID: '',
         DETAILS: 'exported 4000 rows, no filter', IP_ADDRESS: '203.0.113.77',
-        OCCURRED_AT: dt(ago(7, 2, 14)),
+        OCCURRED_AT: ago(7, 2, 14),
       });
     }
   }
@@ -606,9 +619,45 @@ async function insertAll(catalystApp, table, rows) {
  * Seed one stage. `only` is a stage name; omitted means all of them, which will
  * usually exceed the 30-second budget - call it per stage.
  */
-async function seed(catalystApp, { only = null, wipe = true } = {}) {
+/**
+ * Can we still write? One row, then removed.
+ *
+ * This exists because of a real incident: the insert allowance ran out midway
+ * through a re-seed, and since each table is WIPED before it is refilled, four
+ * stages ended up empty rather than merely stale. Losing good data to a quota
+ * error is a far worse outcome than refusing to start, so capacity is checked
+ * before anything is deleted.
+ */
+async function canWrite(catalystApp) {
+  const table = catalystApp.datastore().table('SupportQueryLog');
+  try {
+    const row = await table.insertRow({
+      ORG_ID: '__probe__', LOG_ID: `probe-${Date.now()}`, OUTCOME: 'error',
+      QUESTION: '[seed capacity probe]', GUARD_VERDICT: 'probe', ROW_COUNT: 0, LATENCY_MS: 0,
+      OCCURRED_AT: time.istNaive(),
+    });
+    try { await table.deleteRow(row.ROWID); } catch { /* the probe row is harmless */ }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+async function seed(catalystApp, { only = null, wipe = true, auditPerOrg = null } = {}) {
   const stages = only ? [only] : Object.keys(STAGES);
   const written = {};
+
+  if (wipe) {
+    const probe = await canWrite(catalystApp);
+    if (!probe.ok) {
+      throw new Error(
+        `Refusing to seed: writes are not currently possible, and seeding wipes ` +
+        `before it inserts - starting would empty the tables. Underlying error: ${probe.error}`
+      );
+    }
+  }
+
+  if (auditPerOrg) AUDIT_PER_ORG.value = Math.max(1, Math.min(2000, Number(auditPerOrg)));
 
   for (const name of stages) {
     const builder = STAGES[name];
@@ -720,4 +769,4 @@ async function backfillRefs(catalystApp) {
   };
 }
 
-module.exports = { seed, backfillRefs, STAGES, ORGS, ENGINEER, buildPlatform, buildCrm, buildCampaigns, buildDesk, buildAudit };
+module.exports = { seed, backfillRefs, canWrite, AUDIT_PER_ORG, STAGES, ORGS, ENGINEER, buildPlatform, buildCrm, buildCampaigns, buildDesk, buildAudit };

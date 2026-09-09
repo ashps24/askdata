@@ -1,0 +1,23 @@
+{
+  "Orgs": "30663000000122771",
+  "SupportEntitlements": "30663000000127413",
+  "SupportQueryLog": "30663000000121463",
+  "Users": "30663000000120396",
+  "Profiles": "30663000000127772",
+  "UserProfiles": "30663000000130130",
+  "Permissions": "30663000000123801",
+  "ProfilePermissions": "30663000000121822",
+  "AuditEvents": "30663000000132160",
+  "CRM_Leads": "30663000000128420",
+  "CRM_Accounts": "30663000000128061",
+  "CRM_Contacts": "30663000000124527",
+  "CRM_Deals": "30663000000126191",
+  "CRM_ExportJobs": "30663000000128779",
+  "CRM_FieldHistory": "30663000000130489",
+  "CMP_Lists": "30663000000130848",
+  "CMP_Segments": "30663000000132519",
+  "CMP_Campaigns": "30663000000135207",
+  "DESK_Departments": "30663000000124886",
+  "DESK_DepartmentMembers": "30663000000126550",
+  "DESK_Tickets": "30663000000136245"
+}

@@ -22,6 +22,8 @@
  * because both are engine constraints rather than preferences - see lib/guard.js.
  */
 
+const time = require('./time');
+
 const any = (...terms) => (q) => terms.some((t) => q.includes(t));
 const all = (...preds) => (q) => preds.every((p) => p(q));
 
@@ -43,29 +45,107 @@ const MUTATION = [
   /\b(delete|remove|drop|purge|wipe|clear)\b.*\b(lead|leads|contact|contacts|user|users|record|records|deal|deals|ticket|tickets|all)\b/,
   /\b(set|change|update|edit|modify|fix|correct|reset|revert|restore)\b.*\b(to|back to|as|=)\b/,
   /\b(add|create|assign|grant|enable|disable|deactivate|activate|suspend)\b.*\b(user|users|permission|profile|licence|license|department|segment)\b/,
-  /\bcan you (please )?(change|set|update|fix|delete|remove|add|grant|enable|disable)\b/,
+  // First and second person: the engineer is asking AskData to do it. Kept
+  // separate from the patterns above because those need a target value
+  // ("set X to Y") - "can i update the lead source" has none, and was falling
+  // through to the translator, where the guard refused it for the right reason
+  // but with the wrong explanation.
+  /\bcan\s+(you|we|i)\b.*\b(change|set|update|edit|modify|fix|correct|reset|revert|delete|remove|drop|purge|add|create|grant|enable|disable|assign|merge)\b/,
+  /\b(please|pls)\b.*\b(change|set|update|edit|modify|fix|correct|reset|revert|restore|delete|remove|drop|purge|add|create|grant|enable|disable|deactivate|activate|suspend|assign|merge)\b/,
   /\bmerge\b|\bbulk update\b|\bmass delete\b/,
 ];
 
+/**
+ * Frames that mention a change verb while ASKING about it rather than
+ * requesting it.
+ *
+ * "my user cannot create a segment, why" is the single most common support
+ * question there is, and it is pure read: it resolves to a permission lookup.
+ * Matching `create` + `segment` and refusing it would make the tool useless for
+ * exactly the case it was built for - the engineer would go back to escalating.
+ *
+ * Two frames are safe to admit:
+ *   an inability marker ("cannot", "unable to", "denied", "doesn't have"),
+ *     which describes a state rather than asking for one;
+ *   "can <somebody> <verb>", where the subject is a third party. Note the
+ *     exclusion of you/we/I - "can you please delete these leads" IS a request,
+ *     and must keep falling through to MUTATION below.
+ */
+const DIAGNOSTIC = [
+  /\b(can'?t|cannot|can not|unable to|not able to|couldn'?t|isn'?t able|denied|no permission|not allowed|lacks?|doesn'?t have|does not have|missing the)\b/,
+  /\bcan\s+(?!you\b|we\b|i\b|u\b|it\b)(?:[a-z0-9._@'-]+\s+){1,5}(create|delete|edit|update|modify|export|view|see|read|access|assign|grant)\b/,
+  /\bdoes\s+(?:[a-z0-9._@'-]+\s+){1,4}have\b/,
+  /\b(who|which|what)\s+(?:[a-z0-9._'-]+\s+){0,3}(can|cannot|has|have|is able|are able)\b/,
+];
+
+function diagnosticIntent(question) {
+  const q = String(question ?? '').toLowerCase();
+  return DIAGNOSTIC.some((re) => re.test(q));
+}
+
 function mutationIntent(question) {
   const q = String(question ?? '').toLowerCase();
+  if (diagnosticIntent(q)) return false;
   return MUTATION.some((re) => re.test(q));
 }
 
 /* ------------------------------------------------------- 2. off topic */
 
-/** Words that mean the question is about the customer's data at all. */
+/**
+ * Words that mean the question is about the customer's data at all.
+ *
+ * These are STEMS, matched as substrings, because the test is "is this about
+ * the data" and not "is this spelled canonically". `logg` covers logged,
+ * logging and logged-in; `export` covers exports and exported. Getting this
+ * wrong is expensive in one direction only: a false "off topic" tells a support
+ * engineer their perfectly good question is nonsense, which is the fastest way
+ * to lose them back to the escalation queue.
+ */
 const ON_TOPIC = [
   'lead', 'contact', 'account', 'deal', 'pipeline', 'export', 'source', 'user',
   'profile', 'permission', 'segment', 'list', 'campaign', 'department', 'ticket',
-  'login', 'log in', 'audit', 'activity', 'licence', 'license', 'stage', 'field',
-  'history', 'changed', 'member', 'agent', 'employee', 'staff', 'record', 'org',
-  'admin', 'access', 'role', 'email', 'phone', 'company',
+  'logg', 'login', 'log in', 'sign in', 'signed', 'signin', 'audit', 'activity',
+  'licence', 'license', 'stage', 'field', 'histor', 'chang', 'member', 'agent',
+  'employee', 'staff', 'record', 'org', 'admin', 'access', 'role', 'email',
+  'phone', 'company', 'dormant', 'inactive', 'stale', 'idle', 'seat', 'people',
+  'person', 'revenue', 'amount', 'value', 'owner', 'assign', 'creat', 'modif',
+  'delet', 'denied', 'granted', 'open', 'closed', 'resolv', 'priorit', 'subscri',
 ];
 
-function offTopic(question) {
+/** Stop words never worth treating as a topic signal. */
+const NOT_A_TOPIC = new Set([
+  'id', 'ref', 'org', 'name', 'type', 'kind', 'status', 'count', 'date', 'time',
+  'from', 'this', 'that', 'with', 'were', 'when', 'what', 'which', 'null',
+]);
+
+/**
+ * The vocabulary a question can be about, grown from the packs that are
+ * actually loaded. A new product pack teaches this check its own words without
+ * anybody remembering to edit a list here - the same reason the guard reads its
+ * allowlist from the packs rather than carrying its own copy.
+ */
+function vocabularyFor(loaded) {
+  const words = new Set(ON_TOPIC);
+  for (const table of loaded?.tables ?? []) {
+    for (const part of String(table.label ?? '').toLowerCase().split(/[^a-z]+/)) {
+      if (part.length > 3 && !NOT_A_TOPIC.has(part)) words.add(part);
+    }
+    for (const column of table.columnNames ?? []) {
+      for (const part of column.toLowerCase().split(/[^a-z]+/)) {
+        if (part.length > 3 && !NOT_A_TOPIC.has(part)) words.add(part);
+      }
+    }
+  }
+  for (const [key, alternatives] of Object.entries(loaded?.synonyms ?? {})) {
+    words.add(key.toLowerCase());
+    for (const alt of alternatives) words.add(String(alt).toLowerCase());
+  }
+  return [...words];
+}
+
+function offTopic(question, loaded = null) {
   const q = String(question ?? '').toLowerCase();
-  return !ON_TOPIC.some((w) => q.includes(w));
+  return !vocabularyFor(loaded).some((w) => q.includes(w));
 }
 
 /* ---------------------------------------------------------- extraction */
@@ -80,10 +160,15 @@ function daysIn(question, fallback = 30) {
   return m ? Number(m[1]) : fallback;
 }
 
-/** A date literal `days` ago, in Data Store's datetime shape. */
+/**
+ * A date literal `days` ago, in Data Store's datetime shape.
+ *
+ * Naive IST, not UTC. Data Store datetimes carry no offset and are read in the
+ * project's timezone, so a toISOString() bound would be 5.5 hours adrift - the
+ * same mistake that once made a 02:14 export read as 07:44.
+ */
 function daysAgo(days) {
-  const d = new Date(Date.now() - days * 86400000);
-  return d.toISOString().replace('T', ' ').slice(0, 19);
+  return time.daysAgoNaive(days);
 }
 
 /** "should be in the Escalations department" -> "Escalations" */
@@ -117,6 +202,63 @@ function permissionTarget(question) {
   const act = ACTIONS.find(([w]) => q.includes(w));
   if (!mod || !act) return null;
   return { product: mod[1], module: mod[2], action: act[1], key: `${mod[1]}.${mod[2].toLowerCase()}.${act[1]}` };
+}
+
+/**
+ * "my user", "the agent", "this employee" - a person meant but not named.
+ *
+ * Support questions arrive this way constantly, because the engineer is looking
+ * at the customer's own words. It is not answerable and it is not refusable:
+ * the honest response is to ask which user, which is rule 4 applied to a set of
+ * candidates too large to list rather than to two people with the same name.
+ */
+const VAGUE_PERSON =
+  /\b(my|the|this|that|a|an|their|his|her|its|our|customer'?s?|client'?s?|users?'?s?)\s+(user|users|agent|agents|employee|employees|person|people|admin|admins|rep|reps|member|members|account holder)\b/;
+
+function vaguePersonReference(question) {
+  return VAGUE_PERSON.test(String(question ?? '').toLowerCase());
+}
+
+/**
+ * A proper noun the question hangs a filter on: "how many contacts are at
+ * Aurora Systems".
+ *
+ * This exists because of the worst answer this tool produced in testing. Asked
+ * about contacts at an account that does not exist, it dropped the name and
+ * replied "40 contacts" - the org-wide total, stated with complete confidence.
+ * A refusal costs the engineer a minute; a confidently wrong number goes into a
+ * ticket and out to a customer. So a name that resolves to nothing has to stop
+ * the answer, not quietly widen it.
+ *
+ * Deliberately narrow: it only fires on a name in a filtering position after
+ * at/for/of/in/from/called, and only for questions about CRM records, so that
+ * data-valued capitals elsewhere ("open tickets in Billing") are left alone.
+ */
+const LOCATOR =
+  /\b(?:at|for|of|in|from|called|named|belonging to)\s+("?[A-Z][\w&.'-]*(?:\s+(?:[A-Z][\w&.'-]*|of|and|the))*"?)/;
+
+const RECORD_WORDS = /\b(contact|account|company|customer|deal|lead|opportunit)/i;
+
+function namedEntity(question, loaded = null) {
+  const text = String(question ?? '');
+  if (!RECORD_WORDS.test(text)) return null;
+
+  const phrase = LOCATOR.exec(text)?.[1]?.replace(/"/g, '').trim();
+  if (!phrase || phrase.length < 3) return null;
+
+  // A capital that is really a schema word or an enum value is not a name.
+  const known = new Set(vocabularyFor(loaded));
+  for (const table of loaded?.tables ?? []) {
+    for (const column of table.columns ?? []) {
+      for (const value of column.values ?? []) known.add(String(value).toLowerCase());
+    }
+    known.add(String(table.label ?? '').toLowerCase());
+    known.add(table.name.toLowerCase());
+  }
+  const lower = phrase.toLowerCase();
+  if (known.has(lower) || [...known].some((w) => w.length > 3 && lower === w)) return null;
+
+  return phrase;
 }
 
 /* -------------------------------------------------------------- 3. rules */
@@ -470,6 +612,8 @@ function suggestionsFor(loaded) {
 }
 
 module.exports = {
-  translate, RULES, mutationIntent, offTopic, suggestionsFor,
+  translate, RULES, mutationIntent, diagnosticIntent, offTopic, vocabularyFor, suggestionsFor,
+  namedEntity,
+  vaguePersonReference,
   leadIdIn, daysIn, daysAgo, expectedDepartment, permissionTarget,
 };

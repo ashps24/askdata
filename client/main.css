@@ -215,3 +215,43 @@ details.query pre { margin: 0; padding: 11px 15px; overflow-x: auto; font-family
 .spinner { display: inline-block; width: 13px; height: 13px; margin-top: 3px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
+
+/* An answer that was not audited. Loud on purpose - see renderAnswer. */
+.audit-gap {
+  margin: 10px 0 0;
+  padding: 8px 11px;
+  border-left: 3px solid var(--danger, #d64545);
+  background: rgba(214, 69, 69, 0.08);
+  color: var(--danger, #d64545);
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: 0 4px 4px 0;
+}
+
+/* Stand-in identity, shown so it is never mistaken for a real sign-in. */
+.dev-identity {
+  margin-left: 10px;
+  padding: 2px 8px;
+  border: 1px dashed #7a6a3a;
+  border-radius: 10px;
+  background: rgba(190, 160, 60, 0.12);
+  color: #d8bd6a;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* The evidence grid, folded when it is long enough to bury the answer. */
+details.rows { border-top: 1px solid var(--line); }
+details.rows summary {
+  padding: 8px 15px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink2);
+  cursor: pointer;
+  user-select: none;
+}
+details.rows summary:hover { color: var(--accent); }
+details.rows .table-wrap { border-top: 1px solid var(--line); }

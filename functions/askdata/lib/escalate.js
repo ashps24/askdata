@@ -50,8 +50,15 @@ function withScope(zcql, orgId) {
     .map((m) => m[1]);
   const scope = [...new Set(tables)].map((t) => `${t}.ORG_ID = '${orgId}'`).join(' AND ');
   if (!scope) return zcql;
-  return /\bWHERE\b/i.test(zcql)
-    ? zcql.replace(/\bWHERE\b/i, `WHERE ${scope} AND `)
+  if (/\bWHERE\b/i.test(zcql)) {
+    return zcql.replace(/\bWHERE\b/i, `WHERE ${scope} AND `);
+  }
+  // A WHERE cannot simply be appended: the draft may already end in GROUP BY,
+  // ORDER BY or LIMIT, and `... ORDER BY x WHERE ...` is not a query. Insert it
+  // ahead of the first trailing clause instead.
+  const tail = /\s+(GROUP\s+BY|ORDER\s+BY|LIMIT)\b/i.exec(zcql);
+  return tail
+    ? `${zcql.slice(0, tail.index)} WHERE ${scope}${zcql.slice(tail.index)}`
     : `${zcql} WHERE ${scope}`;
 }
 

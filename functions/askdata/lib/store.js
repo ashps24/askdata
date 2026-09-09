@@ -94,7 +94,7 @@ async function logQuery(catalystApp, entry) {
     ENGINEER_EMAIL: clip(entry.engineerEmail, 200),
     TICKET_ID: clip(entry.ticketId, 32),
     ZGID: clip(entry.zgid, 32),
-    QUESTION: clip(entry.question, 500),
+    QUESTION: clip(entry.question, 255),   // varchar caps at 255
     GENERATED_ZCQL: clip(entry.zcql, 9000),
     GUARD_VERDICT: clip(entry.verdict, 200),
     ROW_COUNT: Number.isFinite(entry.rowCount) ? entry.rowCount : 0,
@@ -114,11 +114,32 @@ async function logQuery(catalystApp, entry) {
 
   try {
     await catalystApp.datastore().table('SupportQueryLog').insertRow(row);
-    return row.LOG_ID;
+    return { ok: true, logId: row.LOG_ID };
   } catch (err) {
-    console.error(`AUDIT WRITE FAILED (query still served): ${err.message} :: ${JSON.stringify(row).slice(0, 400)}`);
-    return null;
+    // "Every query is audited" is one of this tool's four guarantees, so an
+    // audit write that fails is a security event in its own right - not a
+    // warning to bury. It was buried once: an exhausted insert quota stopped
+    // the log dead while answers kept flowing, and nothing said so.
+    console.error(
+      `[SECURITY] askdata AUDIT WRITE FAILED: ${err.message} :: ` +
+      `${JSON.stringify(row).slice(0, 400)}`
+    );
+    return { ok: false, logId: null, error: err.message };
   }
+}
+
+/**
+ * Must an unauditable query be refused?
+ *
+ * Yes in production: answering without a trail is the one thing the tool
+ * promises it cannot do. No in development, where the alternative is an app
+ * that cannot be demonstrated because a free-tier counter ran out - and where
+ * the response carries the warning instead.
+ */
+function requireAudit() {
+  const explicit = process.env.ASKDATA_REQUIRE_AUDIT;
+  if (explicit !== undefined) return String(explicit).toLowerCase() === 'true';
+  return process.env.ASKDATA_ENV === 'Production';
 }
 
 /** The audit trail for one org, newest first. */
@@ -143,4 +164,5 @@ async function fullLog(catalystApp, count = 300) {
   return flattenRows(result);
 }
 
-module.exports = { findOrgByZgid, listOrgs, entitlementFor, logQuery, recentLog, fullLog, nowStamp, q };
+module.exports = {
+  requireAudit, findOrgByZgid, listOrgs, entitlementFor, logQuery, recentLog, fullLog, nowStamp, q };

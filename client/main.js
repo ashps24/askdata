@@ -23,6 +23,7 @@
 
 const API = '/server/askdata';
 const SAVED = 'askdata.connection';
+const INLINE_ROWS = 3;   // rows worth showing without a click
 const ROWS_SHOWN = 50;
 
 const el = (id) => document.getElementById(id);
@@ -63,12 +64,23 @@ function fill(node, ...children) {
   return node;
 }
 
+/**
+ * Who the server should treat as the engineer, when there is no Catalyst
+ * sign-in to go on. Only ever populated from /health, and only outside
+ * Production - the server ignores the header there regardless.
+ */
+let devEngineer = null;
+
 async function api(path, body) {
+  const headers = {};
+  if (body) headers['Content-Type'] = 'application/json';
+  if (devEngineer) headers['X-AskData-Engineer'] = devEngineer;
+
   const res = await fetch(`${API}${path}`, body ? {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
-  } : undefined);
+  } : { headers });
   const text = await res.text();
   let parsed = null;
   if (text) { try { parsed = JSON.parse(text); } catch { parsed = { error: text.slice(0, 300) }; } }
@@ -222,7 +234,7 @@ function renderTable(result) {
     })) : null,
   ]));
 
-  return h('div', {},
+  const grid = h('div', {},
     h('div', { class: 'table-wrap' }, h('table', {}, h('thead', {}, head), h('tbody', {}, body))),
     rows.length > shown.length
       ? h('p', { class: 'reveal-note', text: `Showing ${shown.length} of ${rows.length} rows.` })
@@ -233,6 +245,16 @@ function renderTable(result) {
         ? h('p', { class: 'reveal-note', text: `${masked.join(', ')} masked. Reveal needs a single-table result.` })
         : null
   );
+
+  // The summary is the answer; the grid is the evidence. A long list of rows
+  // between the answer and the reply-for-the-customer buries both, so it folds
+  // away - unless it is short, or unless a flagged row IS the answer, in which
+  // case hiding it would hide the point.
+  if (rows.length <= INLINE_ROWS || flagged.size) return grid;
+
+  return h('details', { class: 'rows' },
+    h('summary', { text: `Show underlying data (${rows.length} rows)` }),
+    grid);
 }
 
 async function reveal(button, table, rowId, columns, row) {
@@ -342,6 +364,12 @@ function renderAnswer(card, result, question) {
     result.replica_lag_seconds > 60
       ? h('p', { class: 'freshness', text: `This read is about ${Math.round(result.replica_lag_seconds / 60)} minute(s) behind live.` })
       : null,
+    // An unaudited answer has to look wrong. The engineer is about to paste it
+    // into a customer-visible ticket on the strength of a trail that does not
+    // exist.
+    result.audit && result.audit.written === false
+      ? h('p', { class: 'audit-gap', text: `Not recorded in the audit log — ${result.audit.error ?? 'the audit write failed'}` })
+      : null,
     ticketBlock(result),
     renderTable(result),
     queryBlock(result)
@@ -423,8 +451,13 @@ async function ask(question) {
       tick();
     }
     loadAudit();
+    // "Where is the answer?" - the card renders below the connect panel and the
+    // question box, which on a laptop viewport puts it under the fold. Bring it
+    // to the top of the view rather than leaving the engineer to hunt for it.
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
     renderRefused(card, { reason: err.message }, q);
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } finally {
     busy = false;
     ui.askBtn.disabled = false;
@@ -478,6 +511,21 @@ for (const tab of document.querySelectorAll('.tab')) {
 }
 
 (async function boot() {
+  // Ask the server who it will accept as an identity BEFORE anything else -
+  // every later call depends on the header this sets.
+  try {
+    const health = await api('/health');
+    if (health?.devIdentity?.allowed && health.devIdentity.engineer) {
+      devEngineer = health.devIdentity.engineer;
+      const badge = h('span', {
+        class: 'dev-identity',
+        text: `dev identity: ${devEngineer}`,
+        title: 'No Catalyst sign-in on this page, so the server is told who you are by header. This is refused in Production.',
+      });
+      document.querySelector('.brand')?.append(badge);
+    }
+  } catch { /* the sign-in path still works; connect will say so */ }
+
   try {
     const { orgs } = await api('/orgs');
     fill(ui.zgids, orgs.map((o) => h('option', { value: o.ZGID, label: `${o.ORG_NAME} (${o.DC})` })));

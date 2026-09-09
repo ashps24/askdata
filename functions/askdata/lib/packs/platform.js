@@ -79,7 +79,7 @@ module.exports = {
         { name: 'ENGINEER_EMAIL', type: 'varchar', max_length: 200 },
         { name: 'TICKET_ID', type: 'varchar', max_length: 32, indexed: true },
         { name: 'ZGID', type: 'varchar', max_length: 32, indexed: true },
-        { name: 'QUESTION', type: 'varchar', max_length: 500 },
+        { name: 'QUESTION', type: 'varchar', max_length: 255 },
         { name: 'GENERATED_ZCQL', type: 'text' },
         { name: 'GUARD_VERDICT', type: 'varchar', max_length: 200 },
         { name: 'ROW_COUNT', type: 'int' },
@@ -192,7 +192,7 @@ module.exports = {
         },
         { name: 'MODULE', type: 'varchar', max_length: 60, indexed: true },
         { name: 'RECORD_ID', type: 'varchar', max_length: 40, indexed: true },
-        { name: 'DETAILS', type: 'varchar', max_length: 400 },
+        { name: 'DETAILS', type: 'varchar', max_length: 255 },
         // Deliberately NOT pii: question 3 needs the IP visible to distinguish a
         // 4,000-row export from an unfamiliar address from three routine ones.
         { name: 'IP_ADDRESS', type: 'varchar', max_length: 45 },
