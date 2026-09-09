@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>AskData — customer data answers for support</title>
+	<link rel="stylesheet" href="main.css">
+</head>
+<body>
+	<!--
+		The connection state is the most important thing on this page.
+		Querying the wrong customer's org is the worst failure mode this tool
+		has, so when connected the bar is coloured, names the customer, and
+		counts the grant down in view at all times.
+	-->
+	<header id="topbar" class="topbar">
+		<div class="brand">
+			<span class="mark" aria-hidden="true">AD</span>
+			<div>
+				<h1>AskData</h1>
+				<p>Answer a customer's question without escalating. Read-only.</p>
+			</div>
+		</div>
+
+		<div id="conn-state" class="conn-state" data-state="off">
+			<span id="conn-dot" class="dot" aria-hidden="true"></span>
+			<div class="conn-text">
+				<strong id="conn-org">Not connected</strong>
+				<span id="conn-meta" class="dim">Connect to a customer to begin</span>
+			</div>
+			<div id="conn-timer" class="timer" hidden>
+				<span id="conn-countdown">30:00</span>
+				<small>grant</small>
+			</div>
+			<button id="disconnect" class="btn-link" type="button" hidden>Disconnect</button>
+		</div>
+	</header>
+
+	<main>
+		<div class="stack">
+
+			<!-- connect ------------------------------------------------- -->
+			<section class="panel" id="connect-panel">
+				<div class="panel-head">
+					<h2>Connect to customer</h2>
+					<button id="conn-change" class="btn-link" type="button" hidden>Change</button>
+				</div>
+
+				<form id="connect-form" class="grid" autocomplete="off">
+					<label for="zgid">Customer ZGID</label>
+					<span class="colon">:</span>
+					<span class="control">
+						<input id="zgid" list="zgids" inputmode="numeric" placeholder="60021847312" spellcheck="false">
+						<datalist id="zgids"></datalist>
+					</span>
+
+					<label for="ticket">Ticket you're on</label>
+					<span class="colon">:</span>
+					<span class="control">
+						<input id="ticket" placeholder="TKT-7312" spellcheck="false">
+					</span>
+
+					<span></span><span></span>
+					<span class="control actions">
+						<button id="connect-go" class="btn-connect" type="submit">Connect</button>
+						<span id="connect-msg" class="msg" role="status" aria-live="polite"></span>
+					</span>
+				</form>
+
+				<div id="conn-detail" class="detail" hidden></div>
+				<p class="hint">
+					You can only open an org you hold an open ticket for, or have elevated access to.
+					Refusals are logged.
+				</p>
+			</section>
+
+			<!-- ask ---------------------------------------------------- -->
+			<section class="panel locked" id="ask-panel">
+				<div class="panel-head"><h2>Ask about this customer</h2></div>
+				<textarea id="question" rows="3" disabled
+					placeholder="Connect to a customer first…"
+					aria-label="Your question in plain English"></textarea>
+				<div class="actions">
+					<button id="ask-btn" class="btn-primary" type="button" disabled>Ask</button>
+					<span class="dim small">Enter to ask · Shift+Enter for a new line · AskData never changes data</span>
+				</div>
+			</section>
+
+			<div id="transcript" class="transcript" aria-live="polite"></div>
+		</div>
+
+		<aside class="side">
+			<nav class="tabs" role="tablist">
+				<button class="tab on" data-panel="p-start" role="tab" aria-selected="true">Starters</button>
+				<button class="tab" data-panel="p-audit" role="tab" aria-selected="false">Audit</button>
+			</nav>
+			<div id="p-start" class="pane on" role="tabpanel">
+				<ul id="starters" class="starters">
+					<li class="dim small">Connect to see questions you can ask.</li>
+				</ul>
+			</div>
+			<div id="p-audit" class="pane" role="tabpanel">
+				<div id="audit"><p class="dim small">Every question you ask is logged here.</p></div>
+			</div>
+		</aside>
+	</main>
+
+	<script src="main.js"></script>
+</body>
+</html>

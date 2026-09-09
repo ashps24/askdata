@@ -1,0 +1,12 @@
+{
+	"functions": {
+		"targets": [
+			"askdata"
+		],
+		"ignore": [],
+		"source": "functions"
+	},
+	"client": {
+		"source": "client"
+	}
+}

@@ -1,0 +1,10 @@
+{
+	"name": "askdata",
+	"version": "1.0.0",
+	"main": "index.js",
+	"author": "ashwin.p@zohocorp.com",
+	"dependencies": {
+		"express": "^5.2.1",
+		"zcatalyst-sdk-node": "latest"
+	}
+}

@@ -1,0 +1,146 @@
+'use strict';
+
+/**
+ * AskData's own tables: the org registry, the entitlement check, and the audit
+ * log. All read and written directly by the server - none of them is in the
+ * query allow-list, so a generated query can never reach them.
+ */
+
+const { flattenRows } = require('./replica');
+
+const q = (v) => String(v ?? '').replace(/'/g, "''");
+const clip = (v, n) => {
+  const s = v === null || v === undefined ? '' : String(v);
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+};
+
+/** IST wall-clock, matching every other datetime in the app. See lib/time.js. */
+const { istNaive } = require('./time');
+const nowStamp = () => istNaive();
+
+/* ---------------------------------------------------------------- registry */
+
+async function findOrgByZgid(catalystApp, zgid) {
+  const result = await catalystApp.zcql().executeZCQLQuery(
+    `SELECT ORG_ID, ZGID, ORG_NAME, DC, EDITION, SUBSCRIBED_PRODUCTS, STATUS, SIGNED_UP_ON ` +
+    `FROM Orgs WHERE ZGID = '${q(zgid)}' LIMIT 1`
+  );
+  return flattenRows(result)[0] ?? null;
+}
+
+async function listOrgs(catalystApp) {
+  const result = await catalystApp.zcql().executeZCQLQuery(
+    'SELECT ORG_ID, ZGID, ORG_NAME, DC, SUBSCRIBED_PRODUCTS, STATUS FROM Orgs ORDER BY ORG_NAME LIMIT 0, 50'
+  );
+  return flattenRows(result);
+}
+
+/* ------------------------------------------------------------- entitlement */
+
+/**
+ * Is this engineer entitled to this org right now?
+ *
+ * Two ways in, both time-bound:
+ *   - an OPEN ticket for that org, matching the ticket the engineer typed
+ *   - an active elevated-access grant covering now
+ *
+ * An engineer with no live reason to be in an org is refused. In production this
+ * reads the ticketing system and the access-grant service; the table is the
+ * seam. Note the ticket must match: holding a ticket for org A does not entitle
+ * you to org B, and neither does a closed one.
+ */
+async function entitlementFor(catalystApp, { engineerEmail, zgid, ticketId }) {
+  const result = await catalystApp.zcql().executeZCQLQuery(
+    `SELECT ENTITLEMENT_ID, ORG_ID, ENGINEER_EMAIL, ZGID, TICKET_ID, KIND, TICKET_STATUS, ` +
+    `VALID_FROM, VALID_UNTIL FROM SupportEntitlements ` +
+    `WHERE ENGINEER_EMAIL = '${q(engineerEmail)}' AND ZGID = '${q(zgid)}' LIMIT 0, 50`
+  );
+  const rows = flattenRows(result);
+  const now = nowStamp();
+
+  const openTicket = rows.find(
+    (r) => r.KIND === 'open_ticket' &&
+      String(r.TICKET_STATUS).toLowerCase() === 'open' &&
+      String(r.TICKET_ID) === String(ticketId)
+  );
+  if (openTicket) return { ...openTicket, via: 'open ticket' };
+
+  const elevated = rows.find(
+    (r) => r.KIND === 'elevated_access' &&
+      (!r.VALID_FROM || String(r.VALID_FROM) <= now) &&
+      (!r.VALID_UNTIL || String(r.VALID_UNTIL) >= now)
+  );
+  if (elevated) return { ...elevated, via: 'elevated access' };
+
+  return null;
+}
+
+/* -------------------------------------------------------------- audit log */
+
+let logSeq = 0;
+
+/**
+ * Write one `SupportQueryLog` row.
+ *
+ * Never throws. A question that was answered correctly must not turn into a 500
+ * because the audit write timed out - but a failure is loud in the function log,
+ * because a silently incomplete audit trail is worse than a noisy one.
+ */
+async function logQuery(catalystApp, entry) {
+  const row = {
+    ORG_ID: clip(entry.orgId, 64),
+    LOG_ID: clip(entry.logId ?? `L-${Date.now()}-${++logSeq}`, 40),
+    ENGINEER_ID: clip(entry.engineerId, 64),
+    ENGINEER_EMAIL: clip(entry.engineerEmail, 200),
+    TICKET_ID: clip(entry.ticketId, 32),
+    ZGID: clip(entry.zgid, 32),
+    QUESTION: clip(entry.question, 500),
+    GENERATED_ZCQL: clip(entry.zcql, 9000),
+    GUARD_VERDICT: clip(entry.verdict, 200),
+    ROW_COUNT: Number.isFinite(entry.rowCount) ? entry.rowCount : 0,
+    LATENCY_MS: Number.isFinite(entry.latencyMs) ? entry.latencyMs : 0,
+    OUTCOME: clip(entry.outcome, 20),
+    PII_REVEALED: clip(entry.piiRevealed, 200),
+    OCCURRED_AT: nowStamp(),
+  };
+
+  // A security-relevant refusal is worth an alert, not just a row.
+  if (entry.security) {
+    console.error(
+      `[SECURITY] askdata ${entry.outcome}: engineer=${row.ENGINEER_EMAIL} zgid=${row.ZGID} ` +
+      `ticket=${row.TICKET_ID} verdict=${row.GUARD_VERDICT} question=${JSON.stringify(row.QUESTION)}`
+    );
+  }
+
+  try {
+    await catalystApp.datastore().table('SupportQueryLog').insertRow(row);
+    return row.LOG_ID;
+  } catch (err) {
+    console.error(`AUDIT WRITE FAILED (query still served): ${err.message} :: ${JSON.stringify(row).slice(0, 400)}`);
+    return null;
+  }
+}
+
+/** The audit trail for one org, newest first. */
+async function recentLog(catalystApp, orgId, count = 100) {
+  const limit = Math.min(Math.max(Number(count) || 100, 1), 300);
+  const result = await catalystApp.zcql().executeZCQLQuery(
+    `SELECT LOG_ID, ENGINEER_EMAIL, TICKET_ID, ZGID, QUESTION, GENERATED_ZCQL, GUARD_VERDICT, ` +
+    `ROW_COUNT, LATENCY_MS, OUTCOME, PII_REVEALED, OCCURRED_AT FROM SupportQueryLog ` +
+    `WHERE ORG_ID = '${q(orgId)}' ORDER BY OCCURRED_AT DESC LIMIT 0, ${limit}`
+  );
+  return flattenRows(result);
+}
+
+/** Everything logged, across orgs - for the audit verification step. */
+async function fullLog(catalystApp, count = 300) {
+  const limit = Math.min(Math.max(Number(count) || 300, 1), 300);
+  const result = await catalystApp.zcql().executeZCQLQuery(
+    `SELECT LOG_ID, ORG_ID, ZGID, ENGINEER_EMAIL, TICKET_ID, QUESTION, GUARD_VERDICT, ` +
+    `ROW_COUNT, OUTCOME, PII_REVEALED, LATENCY_MS, OCCURRED_AT FROM SupportQueryLog ` +
+    `ORDER BY OCCURRED_AT DESC LIMIT 0, ${limit}`
+  );
+  return flattenRows(result);
+}
+
+module.exports = { findOrgByZgid, listOrgs, entitlementFor, logQuery, recentLog, fullLog, nowStamp, q };

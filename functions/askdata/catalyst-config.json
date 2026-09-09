@@ -1,0 +1,23 @@
+{
+	"deployment": {
+		"name": "askdata",
+		"stack": "node24",
+		"type": "advancedio",
+		"memory": 512,
+		"env_variables": {
+			"ASKDATA_ORG_ID": "876513394",
+			"ASKDATA_ENV": "Development",
+			"ASKDATA_GRANT_SECRET": "dev-only-grant-secret-rotate-before-production-2026",
+			"ASKDATA_GRANT_TTL_SECONDS": "1800",
+			"ASKDATA_ADMIN_TOKEN": "askdata-dev-admin-2026",
+			"ASKDATA_DEMO_ENGINEER": "ashwin.p@zohocorp.com",
+			"QUICKML_CONNECTION_NAME": "quickmlcon",
+			"ASKDATA_MODEL_TIMEOUT_MS": "12000",
+			"ASKDATA_CONFIDENCE_FLOOR": "0.6",
+			"ASKDATA_LAG_DEFAULT": "0"
+		}
+	},
+	"execution": {
+		"main": "index.js"
+	}
+}
