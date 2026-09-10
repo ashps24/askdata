@@ -99,6 +99,52 @@ async function entitlementFor(catalystApp, { engineerEmail, zgid, ticketId }) {
   return null;
 }
 
+/**
+ * Every live entitlement this engineer holds, keyed by ZGID.
+ *
+ * Their own access, not anyone else's, so surfacing it leaks nothing: it is
+ * the same list their ticket queue would show. It exists because the commonest
+ * connect failure is not a missing entitlement at all - it is last customer's
+ * ticket still sitting in the box while a new customer is selected, which the
+ * server can only report as "no live reason to open this customer".
+ */
+async function myEntitlements(catalystApp, engineerEmail) {
+  const result = await catalystApp.zcql().executeZCQLQuery(
+    `SELECT ORG_ID, ZGID, TICKET_ID, KIND, TICKET_STATUS, VALID_FROM, VALID_UNTIL ` +
+    `FROM SupportEntitlements WHERE ENGINEER_EMAIL = '${q(engineerEmail)}' LIMIT 0, 200`
+  );
+  const now = nowStamp();
+  const byZgid = new Map();
+
+  for (const row of flattenRows(result)) {
+    const live =
+      row.KIND === 'open_ticket'
+        ? String(row.TICKET_STATUS).toLowerCase() === 'open'
+        : (!row.VALID_FROM || String(row.VALID_FROM) <= now) &&
+          (!row.VALID_UNTIL || String(row.VALID_UNTIL) >= now);
+    if (!live) continue;
+
+    if (!byZgid.has(row.ZGID)) byZgid.set(row.ZGID, { open_tickets: [], elevated: false });
+    const entry = byZgid.get(row.ZGID);
+    if (row.KIND === 'elevated_access') entry.elevated = true;
+    else entry.open_tickets.push(String(row.TICKET_ID));
+  }
+  return byZgid;
+}
+
+/**
+ * Which customer does a ticket the engineer holds actually belong to?
+ * Used only to improve a refusal, and only across tickets they are already
+ * entitled to - so it tells them nothing they could not already see.
+ */
+async function ticketBelongsTo(catalystApp, engineerEmail, ticketId) {
+  const entitlements = await myEntitlements(catalystApp, engineerEmail);
+  for (const [zgid, entry] of entitlements) {
+    if (entry.open_tickets.includes(String(ticketId))) return zgid;
+  }
+  return null;
+}
+
 /* -------------------------------------------------------------- audit log */
 
 let logSeq = 0;
@@ -189,4 +235,4 @@ async function fullLog(catalystApp, count = 300) {
 }
 
 module.exports = {
-  requireAudit, findOrgByServiceId, SERVICE_COLUMN, findOrgByZgid, listOrgs, entitlementFor, logQuery, recentLog, fullLog, nowStamp, q };
+  requireAudit, findOrgByServiceId, SERVICE_COLUMN, myEntitlements, ticketBelongsTo, findOrgByZgid, listOrgs, entitlementFor, logQuery, recentLog, fullLog, nowStamp, q };

@@ -360,3 +360,5 @@ details.rows .table-wrap { border-top: 1px solid var(--line); }
   color: var(--ink2);
 }
 .interpreted b { color: var(--ink); font-weight: 600; }
+
+#ticket-hint { display: block; margin-top: 4px; }

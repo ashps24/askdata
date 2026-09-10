@@ -73,7 +73,9 @@
 					<label for="ticket">Ticket you're on</label>
 					<span class="colon">:</span>
 					<span class="control">
-						<input id="ticket" placeholder="TKT-7312" spellcheck="false">
+						<input id="ticket" list="tickets" placeholder="TKT-7312" spellcheck="false">
+						<datalist id="tickets"></datalist>
+						<span id="ticket-hint" class="dim small"></span>
 					</span>
 
 					<span></span><span></span>

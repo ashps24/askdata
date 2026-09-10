@@ -33,6 +33,7 @@ const ui = {
   connectPanel: el('connect-panel'), connectForm: el('connect-form'), change: el('conn-change'),
   zgid: el('zgid'), zgids: el('zgids'), ticket: el('ticket'),
   service: el('service'), zgidPick: el('zgid-pick'), orgidLabel: el('orgid-label'),
+  tickets: el('tickets'), ticketHint: el('ticket-hint'),
   dataBrowser: el('data-browser'),
   connectGo: el('connect-go'), connectMsg: el('connect-msg'), detail: el('conn-detail'),
   askPanel: el('ask-panel'), question: el('question'), askBtn: el('ask-btn'),
@@ -241,6 +242,48 @@ function renderOrgPicker() {
   // submitted against the new one.
   const stillValid = available.some((o) => o[column] === ui.zgid.value.trim());
   if (!stillValid) ui.zgid.value = '';
+  syncTicketToCustomer();
+}
+
+/**
+ * Keep the ticket field honest about which customer is selected.
+ *
+ * The commonest connect failure is not a missing entitlement - it is the last
+ * customer's ticket still sitting in the box. A ticket belongs to exactly one
+ * customer, so selecting a different one invalidates whatever is in there, and
+ * leaving it looks like the tool is refusing valid access.
+ *
+ * The tickets offered are the engineer's own open tickets for that customer,
+ * which is what their queue would already show them.
+ */
+function syncTicketToCustomer() {
+  const column = SERVICE_COLUMN[ui.service.value];
+  const org = state.orgs.find((o) => o[column] && o[column] === ui.zgid.value.trim());
+  const tickets = org?.open_tickets ?? [];
+
+  fill(ui.tickets, tickets.map((t) => h('option', { value: t })));
+
+  if (!org) {
+    ui.ticketHint.textContent = '';
+    return;
+  }
+
+  // A ticket that does not belong to the selected customer is wrong by
+  // definition - drop it rather than let it be submitted.
+  if (ui.ticket.value.trim() && !tickets.includes(ui.ticket.value.trim())) {
+    ui.ticket.value = '';
+  }
+
+  if (tickets.length === 1) {
+    ui.ticket.value = tickets[0];
+    ui.ticketHint.textContent = `your open ticket for ${org.ORG_NAME}`;
+  } else if (tickets.length > 1) {
+    ui.ticketHint.textContent = `${tickets.length} open tickets for ${org.ORG_NAME}`;
+  } else if (org.elevated) {
+    ui.ticketHint.textContent = `no open ticket — you have elevated access to ${org.ORG_NAME}`;
+  } else {
+    ui.ticketHint.textContent = `you hold no open ticket for ${org.ORG_NAME}`;
+  }
 }
 
 async function connect() {
@@ -724,8 +767,13 @@ for (const tab of document.querySelectorAll('.tab')) {
 
   ui.service.addEventListener('change', renderOrgPicker);
   ui.zgidPick.addEventListener('change', () => {
-    if (ui.zgidPick.value) { ui.zgid.value = ui.zgidPick.value; ui.ticket.focus(); }
+    if (!ui.zgidPick.value) return;
+    ui.zgid.value = ui.zgidPick.value;
+    syncTicketToCustomer();
+    (ui.ticket.value ? ui.connectGo : ui.ticket).focus();
   });
+  // A typed or pasted org id changes the customer just as the picker does.
+  ui.zgid.addEventListener('change', syncTicketToCustomer);
   renderOrgPicker();
 
   try {
@@ -733,6 +781,7 @@ for (const tab of document.querySelectorAll('.tab')) {
     if (saved?.service) { ui.service.value = saved.service; renderOrgPicker(); }
     if (saved?.orgId) ui.zgid.value = saved.orgId;
     if (saved?.ticket) ui.ticket.value = saved.ticket;
+    syncTicketToCustomer();
   } catch { /* ignore corrupt state */ }
 
   onDisconnected(null);

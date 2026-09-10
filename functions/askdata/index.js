@@ -113,8 +113,26 @@ app.get('/diag', async (req, res) => {
 });
 
 app.get('/orgs', async (req, res) => {
+  const catalystApp = catalyst.initialize(req);
   try {
-    res.json({ orgs: await store.listOrgs(catalyst.initialize(req)) });
+    const orgs = await store.listOrgs(catalystApp);
+
+    // Attach the tickets THIS engineer holds for each customer, so the connect
+    // panel can offer them instead of leaving a stale one in the box. Their own
+    // entitlements only - see store.myEntitlements.
+    let entitlements = new Map();
+    try {
+      const engineer = await grant.identifyEngineer(catalystApp, req);
+      entitlements = await store.myEntitlements(catalystApp, engineer.email);
+    } catch { /* not signed in: the picker still works, just without tickets */ }
+
+    res.json({
+      orgs: orgs.map((o) => ({
+        ...o,
+        open_tickets: entitlements.get(o.ZGID)?.open_tickets ?? [],
+        elevated: entitlements.get(o.ZGID)?.elevated ?? false,
+      })),
+    });
   } catch (err) {
     console.error('GET /orgs failed:', err);
     res.status(500).json({ error: 'Could not list orgs.' });
@@ -197,10 +215,30 @@ app.post('/connect', async (req, res) => {
         verdict: `SECURITY: no live entitlement for ${engineer.email} on zgid ${org.ZGID} ticket ${ticketId}`,
         rowCount: 0, latencyMs: Date.now() - started, security: true,
       });
+      // Say WHY, when we can do it without telling them anything new. The
+      // usual cause is the previous customer's ticket left in the box, and
+      // "no live reason" sends someone hunting for a permissions problem that
+      // is really a typo.
+      let hint = '';
+      try {
+        const owner = await store.ticketBelongsTo(catalystApp, engineer.email, ticketId);
+        if (owner && owner !== org.ZGID) {
+          const ownerOrg = await store.findOrgByZgid(catalystApp, owner);
+          hint = ` ${ticketId} is one of your open tickets, but it is for ` +
+            `${ownerOrg?.ORG_NAME ?? `ZGID ${owner}`}, not ${org.ORG_NAME}.`;
+        } else {
+          const mine = await store.myEntitlements(catalystApp, engineer.email);
+          const tickets = mine.get(org.ZGID)?.open_tickets ?? [];
+          hint = tickets.length
+            ? ` Your open ${tickets.length === 1 ? 'ticket' : 'tickets'} for ` +
+              `${org.ORG_NAME}: ${tickets.join(', ')}.`
+            : ` You hold no open ticket for ${org.ORG_NAME}.`;
+        }
+      } catch { /* the refusal stands with or without the hint */ }
+
       return res.status(403).json({
         error:
-          `You do not have a live reason to open ${org.ORG_NAME}. ` +
-          'Connect from an open ticket for this customer, or request elevated access.',
+          `${ticketId} is not a live reason to open ${org.ORG_NAME}.${hint}`,
         code: 'not_entitled',
       });
     }
