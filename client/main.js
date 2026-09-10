@@ -419,6 +419,21 @@ function escalateBlock(question, draft) {
   );
 }
 
+/**
+ * "I read that as …", when the typing was corrected.
+ *
+ * Shown on every outcome, not just answers. If a corrected reading produced
+ * the wrong answer the engineer needs to see why, and if it produced a refusal
+ * they need to know whether the refusal was of their question or of ours.
+ */
+function interpretedNote(result) {
+  if (!result.interpreted_as) return null;
+  const fixes = (result.corrections ?? []).map((c) => `${c.from} → ${c.to}`).join(', ');
+  return h('p', { class: 'interpreted' },
+    'Read as: ', h('b', { text: result.interpreted_as }),
+    fixes ? h('span', { class: 'dim', text: `  (${fixes})` }) : null);
+}
+
 function renderAnswer(card, result, question) {
   card.className = 'card answered';
   const engineClass = String(result.engine ?? '').startsWith('model') ? 'tag-model' : 'tag-rules';
@@ -430,6 +445,7 @@ function renderAnswer(card, result, question) {
       h('span', { class: 'tag tag-ms', text: `${result.latency_ms} ms` }),
       h('span', { class: 'tag tag-asof', text: `as of ${String(result.as_of ?? '').slice(11, 16) || '—'}` })
     ),
+    interpretedNote(result),
     result.replica_lag_seconds > 60
       ? h('p', { class: 'freshness', text: `This read is about ${Math.round(result.replica_lag_seconds / 60)} minute(s) behind live.` })
       : null,
@@ -452,6 +468,7 @@ function renderClarify(card, result, question) {
       h('p', { class: 'summary', text: result.question }),
       h('span', { class: 'tag tag-rules', text: 'needs a choice' })
     ),
+    interpretedNote(result),
   ];
 
   if (result.candidates?.length) {
@@ -479,6 +496,7 @@ function renderRefused(card, result, question) {
       h('p', { class: 'summary', text: result.reason }),
       h('span', { class: 'tag tag-rules', text: 'refused' })
     ),
+    interpretedNote(result),
     result.suggestions?.length
       ? h('ul', { class: 'starters', style: 'padding:0 15px 12px' }, result.suggestions.slice(0, 5).map((s) =>
         h('li', {}, h('button', { type: 'button', text: s, onclick: () => ask(s) }))))

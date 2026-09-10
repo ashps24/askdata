@@ -53,6 +53,7 @@ const people = require('./lib/people');
 const escalate = require('./lib/escalate');
 const nl2zcql = require('./lib/nl2zcql');
 const llm = require('./lib/llm');
+const spell = require('./lib/spell');
 const { probeConnection } = require('./lib/connection');
 
 const app = express();
@@ -307,6 +308,15 @@ app.post('/ask', async (req, res) => {
   }
 
   const { claims, org, loaded } = ctx;
+
+  // Correct the typing before anything reads the question. Both engines
+  // benefit: the rules match on substrings that a misspelling destroys, and
+  // the model gets a cleaner prompt. The ORIGINAL is what gets audited - the
+  // log has to show what the engineer actually typed - and the corrections
+  // ride along on the answer so they can see what was read.
+  const spelled = spell.correct(question, loaded);
+  const asked = spelled.text;
+
   const base = {
     orgId: org.ORG_ID, zgid: claims.zgid, ticketId: claims.ticketId,
     engineerId: claims.engineerId, engineerEmail: claims.engineerEmail, question,
@@ -314,7 +324,12 @@ app.post('/ask', async (req, res) => {
 
   const finish = async (payload, log) => {
     const latencyMs = Date.now() - started;
-    const audit = await store.logQuery(catalystApp, { ...base, ...log, latencyMs });
+    const audit = await store.logQuery(catalystApp, {
+      ...base, ...log, latencyMs,
+      verdict: spelled.changed
+        ? `${log.verdict ?? ''} [read as: ${asked}]`.trim()
+        : log.verdict,
+    });
 
     // Fail closed: an answer with no audit row is the one outcome this tool
     // promises is impossible. In development it is downgraded to a visible
@@ -334,6 +349,9 @@ app.post('/ask', async (req, res) => {
 
     return res.status(payload.status ?? 200).json({
       ...payload.body,
+      ...(spelled.changed
+        ? { interpreted_as: asked, corrections: spelled.corrections }
+        : {}),
       ...(audit.ok ? {} : {
         audit: {
           written: false,
@@ -355,9 +373,9 @@ app.post('/ask', async (req, res) => {
 
   try {
     /* -- 1. does this ask for a CHANGE? --------------------------------- */
-    if (rules.mutationIntent(question)) {
+    if (rules.mutationIntent(asked)) {
       const draft = escalate.build({
-        question, reason: 'asks for a change; AskData is read-only',
+        question: asked, reason: 'asks for a change; AskData is read-only',
         orgId: org.ORG_ID, zgid: claims.zgid, ticketId: claims.ticketId,
         engineerEmail: claims.engineerEmail, loaded, orgName: org.ORG_NAME,
       });
@@ -373,7 +391,7 @@ app.post('/ask', async (req, res) => {
     }
 
     /* -- 2. is it about the customer's data at all? --------------------- */
-    if (rules.offTopic(question, loaded)) {
+    if (rules.offTopic(asked, loaded)) {
       return finish({
         body: {
           mode: 'clarify',
@@ -390,12 +408,12 @@ app.post('/ask', async (req, res) => {
     let person = null;
     try {
       const roster = await people.roster(catalystApp, org.ORG_ID);
-      const found = people.findPeople(question, roster);
+      const found = people.findPeople(asked, roster);
 
       if (found?.ambiguous) {
         // RULE 4. Never pick one. A permissions or exfiltration answer about
         // the wrong person is a false accusation with a query log behind it.
-        const candidates = people.clarifyCandidates(found, question);
+        const candidates = people.clarifyCandidates(found, asked);
         return finish({
           body: {
             mode: 'clarify',
@@ -418,8 +436,8 @@ app.post('/ask', async (req, res) => {
     // A question ABOUT a person that never names one. Asking is the only honest
     // move: guessing would breach rule 4, and refusing sends the engineer back
     // to the debug queue over a missing word.
-    if (!person && rules.vaguePersonReference(question)) {
-      const target = rules.permissionTarget(question);
+    if (!person && rules.vaguePersonReference(asked)) {
+      const target = rules.permissionTarget(asked);
       return finish({
         body: {
           mode: 'clarify',
@@ -431,7 +449,7 @@ app.post('/ask', async (req, res) => {
           // the ticket. A placeholder like "<user email>" would be a suggestion
           // that fails when clicked.
           suggestions: [
-            people.replaceVaguePerson(question, 'U-2004'),
+            people.replaceVaguePerson(asked, 'U-2004'),
             target ? `does U-2004 have ${target.key}` : null,
           ].filter(Boolean),
         },
@@ -443,12 +461,12 @@ app.post('/ask', async (req, res) => {
 
     let account = null;
     let accounts = [];
-    if (/\b(?:at|for|of|in)\s+[A-Z]/.test(question) || /contact|account|company/i.test(question)) {
+    if (/\b(?:at|for|of|in)\s+[A-Z]/.test(asked) || /contact|account|company/i.test(asked)) {
       try {
         accounts = replica.flattenRows(await catalystApp.zcql().executeZCQLQuery(
           `SELECT ACCOUNT_ID, ACCOUNT_NAME FROM CRM_Accounts WHERE ORG_ID = '${store.q(org.ORG_ID)}' LIMIT 0, 300`
         ));
-        const hit = people.resolveLabel(question, accounts, 'ACCOUNT_NAME');
+        const hit = people.resolveLabel(asked, accounts, 'ACCOUNT_NAME');
         if (hit?.ambiguous) {
           return finish({
             body: {
@@ -456,7 +474,7 @@ app.post('/ask', async (req, res) => {
               question: `Several accounts match that name in ${org.ORG_NAME}. Which one?`,
               candidates: hit.matches.slice(0, 8).map((a) => ({
                 account_id: a.ACCOUNT_ID, account_name: a.ACCOUNT_NAME,
-                suggestion: people.replaceTerm(question, a.ACCOUNT_NAME, a.ACCOUNT_NAME),
+                suggestion: people.replaceTerm(asked, a.ACCOUNT_NAME, a.ACCOUNT_NAME),
               })),
             },
           }, { outcome: 'clarify', zcql: '', rowCount: 0, verdict: 'ambiguous account label' });
@@ -469,7 +487,7 @@ app.post('/ask', async (req, res) => {
     // means answering a DIFFERENT question - the org-wide one - and saying so
     // with a confident number. See rules.namedEntity.
     if (!account && !person) {
-      const named = rules.namedEntity(question, loaded);
+      const named = rules.namedEntity(asked, loaded);
       if (named) {
         const near = people.nearestLabels(named, accounts, 'ACCOUNT_NAME', 3);
         return finish({
@@ -479,7 +497,7 @@ app.post('/ask', async (req, res) => {
               `I could not find "${named}" in ${org.ORG_NAME}` +
               `${near.length ? '. Did you mean one of these?' : ', so I have not answered - the count for the whole account would be a different question.'}`,
             candidates: near.map((a) => ({ account_id: a.ACCOUNT_ID, account_name: a.ACCOUNT_NAME })),
-            suggestions: near.map((a) => people.replaceTerm(question, named, a.ACCOUNT_NAME)),
+            suggestions: near.map((a) => people.replaceTerm(asked, named, a.ACCOUNT_NAME)),
           },
         }, {
           outcome: 'clarify', zcql: '', rowCount: 0,
@@ -496,7 +514,7 @@ app.post('/ask', async (req, res) => {
     let modelNote = null;
 
     try {
-      const out = await nl2zcql.translate(catalystApp, { question, loaded, history, person });
+      const out = await nl2zcql.translate(catalystApp, { question: asked, loaded, history, person });
       if (out.intent === 'refuse') {
         modelNote = `model refused: ${out.explanation || 'no reason given'}`;
       } else if (out.intent === 'clarify' || out.confidence < nl2zcql.CONFIDENCE_FLOOR) {
@@ -516,7 +534,7 @@ app.post('/ask', async (req, res) => {
     }
 
     if (!proposed) {
-      const ruled = rules.translate(question, resolved);
+      const ruled = rules.translate(asked, resolved);
       if (ruled) {
         proposed = ruled.zcql;
         engine = `rules:${ruled.ruleId}`;
@@ -570,8 +588,13 @@ app.post('/ask', async (req, res) => {
     const result = await replica.read(catalystApp, org, compiled.zcql);
     const masked = mask.maskRows(result.rows, compiled.tables, loaded);
     const described = answer.build({
-      question, rows: masked.rows, columns: result.columns,
+      question: asked, rows: masked.rows, columns: result.columns,
       tables: compiled.tables, loaded, replica: result,
+      // The rule that wrote the query is the most reliable statement of what
+      // was asked. Shaping on columns alone once described an "active users"
+      // result as "have not logged in" - the exact opposite - because both
+      // queries return the same four columns.
+      engine,
     });
 
     return finish({

@@ -155,9 +155,37 @@ function leadIdIn(question) {
   return /\b(\d{10,})\b/.exec(String(question ?? ''))?.[1] ?? null;
 }
 
+/**
+ * How long a period the question is about, in days.
+ *
+ * People do not write "30 days". They write "the last one month", "a
+ * fortnight", "this quarter". Only understanding "N days" meant the commonest
+ * phrasing of a time-window question fell through to "I couldn't work that
+ * out", which is a parser problem presented to the user as their mistake.
+ */
+const UNIT_DAYS = {
+  day: 1, days: 1, week: 7, weeks: 7, fortnight: 14,
+  month: 30, months: 30, quarter: 90, quarters: 90, year: 365, years: 365,
+};
+
+const WORD_NUMBERS = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12,
+};
+
 function daysIn(question, fallback = 30) {
-  const m = /(\d{1,4})\s*(?:day|days)\b/i.exec(String(question ?? ''));
-  return m ? Number(m[1]) : fallback;
+  const text = String(question ?? '').toLowerCase();
+  const m =
+    /(?:\b(?:last|past|previous|recent|this)\s+)?\b(\d{1,4}|a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve)?\s*(day|days|week|weeks|fortnight|month|months|quarter|quarters|year|years)\b/
+      .exec(text);
+  if (!m) return fallback;
+
+  const unit = UNIT_DAYS[m[2]] ?? 1;
+  const countToken = m[1];
+  const count = countToken === undefined
+    ? 1
+    : (WORD_NUMBERS[countToken] ?? Number(countToken));
+  return Math.max(1, Math.round((Number.isFinite(count) ? count : 1) * unit));
 }
 
 /**
@@ -213,10 +241,21 @@ function permissionTarget(question) {
  * candidates too large to list rather than to two people with the same name.
  */
 const VAGUE_PERSON =
-  /\b(my|the|this|that|a|an|their|his|her|its|our|customer'?s?|client'?s?|users?'?s?)\s+(user|users|agent|agents|employee|employees|person|people|admin|admins|rep|reps|member|members|account holder)\b/;
+  /\b(my|the|this|that|a|an|their|his|her|its|our|customer'?s?|client'?s?)\s+(user|agent|employee|person|admin|rep|member|account holder)\b/;
+
+/**
+ * Plural and collective forms. "All the users" is a request about everybody,
+ * not an unnamed individual, and asking "which user did you mean?" in reply is
+ * both wrong and irritating - it was the first thing that broke when the
+ * unnamed-person clarify went in.
+ */
+const COLLECTIVE_PEOPLE =
+  /\b(all|every|each|list|which|who|any|both|several|many|most|the\s+full|a\s+list\s+of)\b[^.?!]{0,24}\b(users|agents|employees|people|persons|admins|reps|members|staff)\b|\b(users|agents|employees|people|admins|members|staff)\b/;
 
 function vaguePersonReference(question) {
-  return VAGUE_PERSON.test(String(question ?? '').toLowerCase());
+  const q = String(question ?? '').toLowerCase();
+  if (COLLECTIVE_PEOPLE.test(q)) return false;
+  return VAGUE_PERSON.test(q);
 }
 
 /**
@@ -431,6 +470,44 @@ const RULES = [
 
   /* -- users coverage --------------------------------------------------- */
   {
+    // Every user, with whether they hold one named permission - in ONE query.
+    //
+    // This is the shape support actually needs: not "can Priya create leads"
+    // but "who can, and who can't". It is the full four-join spine with the
+    // permission pinned and the user left open, so a single read returns both
+    // sides of the answer. Every profile carries a row per permission with
+    // GRANTED true or false, so nobody is missing from the result.
+    id: 'users-by-permission',
+    // No wh-word requirement. "users has permission to create leads" is the
+    // same question as "which users can create leads", and demanding "which"
+    // meant a typo in that one word - which the corrector rightly refuses to
+    // guess at, since "wich" is equally close to "with" - lost the whole
+    // question. A named permission plus a plural of people is enough.
+    when: (q, ctx) =>
+      Boolean(ctx.permission) && !ctx.person &&
+      /\b(users|people|agents|employees|staff|everyone|anybody|anyone)\b/.test(q),
+    build: (q, ctx) =>
+      'SELECT Users.USER_ID, Users.FULL_NAME, Users.EMAIL, Profiles.PROFILE_NAME, ' +
+      'ProfilePermissions.GRANTED ' +
+      PERMISSION_CHAIN +
+      `WHERE Permissions.PERMISSION_KEY = ${lit(ctx.permission.key)} ` +
+      'ORDER BY Users.FULL_NAME',
+  },
+  {
+    // The inverse of dormant-users. "Active" has to be matched as a whole word
+    // that is not the tail of "inactive", or every dormancy question would be
+    // answered with its own opposite.
+    id: 'active-users',
+    when: (q) =>
+      /(?<!in)\bactive\b|\blogged in\b|\bsigned in\b|\bhave logged\b/.test(q) &&
+      !/\binactive\b|\bdormant\b|\bhasn'?t\b|\bhaven'?t\b|\bhas not\b|\bhave not\b|\bnever\b|\bnot logged\b/.test(q) &&
+      /\buser|people|agent|employee|staff|who\b/.test(q),
+    build: (q, ctx) =>
+      'SELECT Users.FULL_NAME, Users.EMAIL, Users.STATUS, Users.LAST_LOGIN FROM Users ' +
+      `WHERE Users.LAST_LOGIN >= ${lit(daysAgo(ctx.days))} ` +
+      'ORDER BY Users.LAST_LOGIN DESC',
+  },
+  {
     id: 'dormant-users',
     // Written loosely on purpose: engineers type "hasn't", "hasnt" and "has
     // not" interchangeably, and an apostrophe should not decide whether a
@@ -598,7 +675,8 @@ function suggestionsFor(loaded) {
       'how many leads do we have',
       'break down leads by source',
       'which leads have no source set',
-      'total pipeline value by stage'
+      'total pipeline value by stage',
+      'which users can create leads'
     );
   }
   if (loaded.productKeys.includes('campaigns')) {
@@ -607,7 +685,11 @@ function suggestionsFor(loaded) {
   if (loaded.productKeys.includes('desk')) {
     out.push('which departments is <user> in', 'how many open tickets per department');
   }
-  out.push("who hasn't logged in for 30 days", 'which profiles can delete records');
+  out.push(
+    'which users have been active in the last one month',
+    "who hasn't logged in for 30 days",
+    'which profiles can delete records'
+  );
   return out;
 }
 

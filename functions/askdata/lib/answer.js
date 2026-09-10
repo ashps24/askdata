@@ -28,6 +28,7 @@
  */
 
 const time = require('./time');
+const rules = require('./rules');
 
 /* ------------------------------------------------------------- formatting */
 
@@ -51,6 +52,22 @@ function fmtMoney(value) {
 /** Avoid "Divya R.." - a masked surname already ends in a period. */
 function sentence(text) {
   return String(text).replace(/\.\.(\s|$)/g, '.$1').replace(/\.\s*\./g, '.');
+}
+
+/**
+ * The time window a question asked about, phrased as they phrased it.
+ * Falls back to the resolved day count when they wrote nothing recognisable.
+ */
+function describeWindow(question) {
+  const m =
+    /\b(?:last|past|previous|recent|this)\s+((?:\d{1,4}|a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve)?\s*(?:day|days|week|weeks|fortnight|month|months|quarter|quarters|year|years))\b/i
+      .exec(String(question ?? ''));
+  if (m) return `the last ${m[1].trim().replace(/\s+/g, ' ')}`;
+
+  const bare = /\b(\d{1,4})\s*(day|days|week|weeks|month|months|year|years)\b/i.exec(String(question ?? ''));
+  if (bare) return `the last ${bare[1]} ${bare[2].toLowerCase()}`;
+
+  return `the last ${rules.daysIn(question)} days`;
 }
 
 function list(items, joiner = 'and') {
@@ -83,6 +100,97 @@ function firstAggregate(row) {
  * `ctx` = { question, rows, columns, tables, loaded, replica, grant, single }
  */
 const SHAPERS = [
+  /* ---- 0a. every user, against one permission ------------------------- */
+  {
+    /**
+     * "Show me all the users and who can create leads."
+     *
+     * The result carries both halves of the answer - a GRANTED row per user -
+     * so the summary must give the split and name the profiles responsible.
+     * Reporting "15 granted, 10 denied across 25 rows" describes the result
+     * set rather than answering the question; an engineer needs to know which
+     * profile to change.
+     */
+    id: 'users-by-permission',
+    match: ({ ruleId }) => ruleId === 'users-by-permission',
+    build: ({ rows, question }) => {
+      const key = rows[0]?.PERMISSION_KEY ?? null;
+      const action = /\b(create|delete|edit|update|export|view|share|approve)\b/i.exec(question)?.[1] ?? 'use';
+      const what = key ? key.split('.')[1] : (/\b(lead|contact|account|deal|ticket|segment|list|campaign)s?\b/i.exec(question)?.[1] ?? 'record') + 's';
+
+      const yes = rows.filter((r) => r.GRANTED === true || r.GRANTED === 'true' || r.GRANTED === 'True');
+      const no = rows.filter((r) => !(r.GRANTED === true || r.GRANTED === 'true' || r.GRANTED === 'True'));
+      const profiles = (subset) => [...new Set(subset.map((r) => r.PROFILE_NAME).filter(Boolean))];
+      const grantedProfiles = profiles(yes);
+      const deniedProfiles = profiles(no);
+
+      if (!rows.length) {
+        return {
+          summary: `No user profile in this account carries that permission.`,
+          ticket_comment:
+            'Hi, I checked this at our end. No profile in the account has that permission ' +
+            'switched on, so no user currently has it.',
+        };
+      }
+
+      return {
+        summary: sentence(
+          `${fmtNumber(yes.length)} of ${fmtNumber(rows.length)} users can ${action} ${what}` +
+          (grantedProfiles.length ? ` (${list(grantedProfiles)})` : '') +
+          (no.length
+            ? `; the other ${fmtNumber(no.length)} cannot${deniedProfiles.length ? ` (${list(deniedProfiles)})` : ''}`
+            : '')
+        ),
+        ticket_comment: sentence(
+          `Hi, I checked this at our end. ${fmtNumber(yes.length)} of the ${fmtNumber(rows.length)} ` +
+          `users in the account can ${action} ${what}, through the ` +
+          `${list(grantedProfiles)} ${grantedProfiles.length === 1 ? 'profile' : 'profiles'}` +
+          (no.length
+            ? `. The remaining ${fmtNumber(no.length)} are on ${list(deniedProfiles)}, where that ` +
+              'permission is switched off. An administrator can enable it on the profile, or move ' +
+              'the user to a profile that already has it'
+            : '')
+        ),
+        // Flag the denials: "who cannot" is the half that generates tickets.
+        highlights: no.slice(0, 3).map((r) => ({
+          row: rows.indexOf(r),
+          why: `denied via ${r.PROFILE_NAME}`,
+        })),
+      };
+    },
+  },
+
+  /* ---- 0b. users active within a window ------------------------------- */
+  {
+    id: 'active-users',
+    match: ({ ruleId }) => ruleId === 'active-users',
+    build: ({ rows, question }) => {
+      // Say the window back in the user's own units. They asked about "the
+      // last one month"; answering "the last 30 days" is correct but reads as
+      // though the question was not understood.
+      const window = describeWindow(question);
+      if (!rows.length) {
+        return {
+          summary: `No user has signed in during ${window}.`,
+          ticket_comment:
+            `Hi, I checked this at our end. No user in the account has signed in during ${window}.`,
+        };
+      }
+      const newest = rows[0]?.LAST_LOGIN;
+      return {
+        summary: sentence(
+          `${fmtNumber(rows.length)} ${rows.length === 1 ? 'user has' : 'users have'} signed in during ` +
+          `${window}${newest ? `, most recently on ${fmtDateTime(newest)}` : ''}`
+        ),
+        ticket_comment: sentence(
+          `Hi, I checked this at our end. ${fmtNumber(rows.length)} ` +
+          `${rows.length === 1 ? 'user has' : 'users have'} signed in during ${window}` +
+          `${newest ? `, the most recent on ${fmtDateTime(newest)}` : ''}`
+        ),
+      };
+    },
+  },
+
   /* ---- 1. lead source for one lead ------------------------------------ */
   {
     id: 'lead-source',
@@ -382,9 +490,11 @@ const SHAPERS = [
   /* ---- 6. dormant users ------------------------------------------------ */
   {
     id: 'dormant-users',
-    match: ({ tables, columns, question }) =>
+    match: ({ tables, columns, question, ruleId }) =>
+      ruleId !== 'active-users' &&
       tables.includes('Users') && columns.includes('LAST_LOGIN') &&
-      /log ?in|logged|signed|dormant|inactive|active/i.test(question),
+      (ruleId === 'dormant-users' ||
+        /log ?in|logged|signed|dormant|inactive/i.test(question)),
     build: ({ rows }) => {
       if (!rows.length) {
         return {
@@ -397,7 +507,7 @@ const SHAPERS = [
       const oldest = rows[rows.length - 1];
       return {
         summary:
-          `${fmtNumber(rows.length)} user${rows.length === 1 ? '' : 's'} have not logged in in that period` +
+          `${fmtNumber(rows.length)} user${rows.length === 1 ? '' : 's'} have not logged in during that period` +
           `${oldest?.LAST_LOGIN ? `, the longest since ${fmtDate(oldest.LAST_LOGIN)}` : ''}.`,
         ticket_comment:
           `Hi, I checked this at our end. ${fmtNumber(rows.length)} user${rows.length === 1 ? ' has' : 's have'} ` +
@@ -526,8 +636,13 @@ function humanAgg(key) {
  * but only when lag exceeds the threshold - saying "as of 0 seconds ago" on
  * every reply is noise that trains people to ignore the line that matters.
  */
-function build({ question, rows, columns, tables, loaded, replica }) {
-  const ctx = { question: String(question ?? ''), rows, columns, tables, loaded, replica };
+function build({ question, rows, columns, tables, loaded, replica, engine = '' }) {
+  const ctx = {
+    question: String(question ?? ''), rows, columns, tables, loaded, replica,
+    engine: String(engine ?? ''),
+    /** The rule id behind `rules:<id>`, or '' when the model wrote the query. */
+    ruleId: /^rules:(.+)$/.exec(String(engine ?? ''))?.[1] ?? '',
+  };
   const shaper = SHAPERS.find((s) => {
     try { return s.match(ctx); } catch { return false; }
   }) ?? GENERIC;

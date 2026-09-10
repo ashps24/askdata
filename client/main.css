@@ -349,3 +349,14 @@ details.rows .table-wrap { border-top: 1px solid var(--line); }
 }
 .btn-page:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .btn-page:disabled { opacity: 0.4; cursor: default; }
+
+/* What the question was understood to say, when it was corrected. */
+.interpreted {
+  margin: 0;
+  padding: 7px 15px;
+  border-top: 1px solid var(--line);
+  background: var(--surface2);
+  font-size: 12px;
+  color: var(--ink2);
+}
+.interpreted b { color: var(--ink); font-weight: 600; }
