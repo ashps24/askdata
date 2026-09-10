@@ -481,7 +481,31 @@ function compile(proposed, orgId, loaded) {
     outer
       ? `(${qual}.ORG_ID = '${orgId}' OR ${qual}.ROWID IS NULL)`
       : `${qual}.ORG_ID = '${orgId}'`);
-  const scope = conjuncts.join(' AND ');
+
+  // The SECOND axis of the boundary: the service.
+  //
+  // Table-level scoping is not enough. Profiles, UserProfiles, Permissions and
+  // AuditEvents are shared by every product and carry a PRODUCT column, and
+  // they are always loaded - so a Desk session asking "which profiles can
+  // delete records" ran a perfectly org-scoped query and came back with CRM
+  // and Campaigns rows. That is not a broad answer; it is data from a service
+  // the engineer did not connect to. So when the grant names a service, every
+  // PRODUCT-bearing table in the query is pinned to it, exactly as ORG_ID is.
+  // Injected, never trusted: a model-written PRODUCT predicate is AND-ed with
+  // ours inside its own parentheses and can only narrow.
+  const service = loaded.serviceKey && loaded.serviceKey !== 'all'
+    ? String(loaded.serviceKey).replace(/'/g, '')
+    : null;
+  const serviceConjuncts = service
+    ? [...qualifiers.entries()]
+      .filter(([, { table }]) => loaded.byTable.get(table)?.columnNames?.includes('PRODUCT'))
+      .map(([qual, { outer }]) =>
+        outer
+          ? `(${qual}.PRODUCT = '${service}' OR ${qual}.ROWID IS NULL)`
+          : `${qual}.PRODUCT = '${service}'`)
+    : [];
+
+  const scope = [...conjuncts, ...serviceConjuncts].join(' AND ');
 
   let rebuilt;
   const insertAt = tail.length ? tail[0].index : masked.length;
@@ -517,12 +541,14 @@ function compile(proposed, orgId, loaded) {
     tables: [...tablesUsed],
     qualifiers: Object.fromEntries([...qualifiers].map(([k, v]) => [k, v.table])),
     injected: scope,
+    serviceScoped: serviceConjuncts.length > 0 ? service : null,
     limit,
     columnCount,
     hasAggregate,
     strippedOrgPredicate,
     verdict: `pass: ${tablesUsed.size} table(s), ${joinKeywords.length} join(s)` +
-      `${strippedOrgPredicate ? ', stripped model ORG_ID' : ''}, scope injected`,
+      `${strippedOrgPredicate ? ', stripped model ORG_ID' : ''}, scope injected` +
+      `${serviceConjuncts.length ? ` (${serviceConjuncts.length} table(s) pinned to ${service})` : ''}`,
   };
 }
 

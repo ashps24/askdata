@@ -290,6 +290,30 @@ function permissionTarget(question) {
   return { product: mod[1], module: mod[2], action: act[1], key: `${mod[1]}.${mod[2].toLowerCase()}.${act[1]}` };
 }
 
+/** The action alone - so "who can delete records" can be seen to name no module. */
+function permissionAction(question) {
+  const q = String(question ?? '').toLowerCase();
+  const act = ACTIONS.find(([w]) => q.includes(w));
+  return act ? act[1] : null;
+}
+
+/**
+ * The modules a permission question could be about, within one service.
+ *
+ * "Which profiles can delete records" names an action and no module. In a
+ * Desk session the honest options are tickets and departments - offering leads
+ * there would be offering another service's data. With no service (a bare
+ * ZGID session) every module of every subscribed product is fair game.
+ */
+function modulesFor(serviceKey, orgProducts = null) {
+  const scoped = serviceKey && serviceKey !== 'all' ? String(serviceKey) : null;
+  const owned = orgProducts ? new Set(orgProducts) : null;
+  return MODULES
+    .filter(([, product]) => (scoped ? product === scoped : true))
+    .filter(([, product]) => (owned ? owned.has(product) : true))
+    .map(([word, product, module]) => ({ word, product, module, plural: `${word}s` }));
+}
+
 /**
  * "my user", "the agent", "this employee" - a person meant but not named.
  *
@@ -758,7 +782,12 @@ const PEOPLE_OR_PRONOUN =
 function accessQuestion(q, context) {
   if (!CAPABILITY.test(q)) return false;
 
-  if (!context.permission &&
+  // A permission target, a permission noun, OR a bare action. "Which profiles
+  // can delete records" names no module and never says "permission", but
+  // "can delete" is a capability question about an action - and it must be
+  // classified as one, or the clarify that asks "delete what?" never runs and
+  // the question falls through to a rule that answers across every module.
+  if (!context.permission && !permissionAction(q) &&
       !/\b(permission|permissions|privilege|privileges|access|rights)\b/.test(q)) {
     return false;
   }
@@ -822,5 +851,5 @@ module.exports = {
   accessQuestion,
   namedEntity,
   vaguePersonReference,
-  leadIdIn, daysIn, daysAgo, expectedDepartment, permissionTarget,
+  leadIdIn, daysIn, daysAgo, expectedDepartment, permissionTarget, permissionAction, modulesFor,
 };

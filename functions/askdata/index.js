@@ -521,6 +521,66 @@ app.post('/ask', async (req, res) => {
       console.warn(`name resolution skipped: ${err.message}`);
     }
 
+    /* -- 3b. the SERVICE boundary on permission questions ---------------- */
+    //
+    // Permissions live in shared platform tables, so the guard's table
+    // allow-list cannot catch a question about another service's permissions.
+    // Two cases, both before any query is written:
+    //
+    //   the question names a module from ANOTHER service ("who can delete
+    //   leads" in a Desk session) - refuse, and say which session to open;
+    //
+    //   it names an action but no module ("who can delete records") - ask
+    //   which, offering only THIS service's modules. Answering across every
+    //   module of every product is how a Desk session came back with CRM rows.
+    if (rules.accessQuestion(asked.toLowerCase(), { permission: rules.permissionTarget(asked) })) {
+      const target = rules.permissionTarget(asked);
+      const service = loaded.serviceKey && loaded.serviceKey !== 'all' ? loaded.serviceKey : null;
+      const label = { crm: 'Zoho CRM', campaigns: 'Zoho Campaigns', desk: 'Zoho Desk' };
+
+      if (target && service && target.product !== service) {
+        const owns = (loaded.orgProducts ?? []).includes(target.product);
+        return finish({
+          body: {
+            mode: 'refused',
+            reason: owns
+              ? `You are connected to this customer's ${label[service]} data, and ${target.module.toLowerCase()} ` +
+                `belong to ${label[target.product]}. Reconnect with their ${target.product} org id to ask about ` +
+                `${target.module.toLowerCase()} permissions.`
+              : `This customer isn't subscribed to ${label[target.product]}, so there are no ` +
+                `${target.module.toLowerCase()} permissions to check. Their products are: ` +
+                `${(loaded.orgProducts ?? []).join(', ')}.`,
+            suggestions: rules.modulesFor(service, loaded.orgProducts)
+              .map((m) => asked.replace(new RegExp(`\\b${target.module.toLowerCase()}\\b|\\b${target.module.toLowerCase().replace(/s$/, '')}\\b`, 'i'), m.plural)),
+            escalation_draft: null,
+          },
+        }, {
+          outcome: 'refused', zcql: '', rowCount: 0,
+          verdict: `permission target ${target.key} is outside the session service (${service})`,
+        });
+      }
+
+      const action = rules.permissionAction(asked);
+      if (action && !target) {
+        const modules = rules.modulesFor(service, loaded.orgProducts);
+        const verb = /\b(delete|remove|create|add|edit|update|export|view|share|approve)\b/i.exec(asked)?.[1] ?? action;
+        return finish({
+          body: {
+            mode: 'clarify',
+            question:
+              `${verb.charAt(0).toUpperCase() + verb.slice(1).toLowerCase()} what? ` +
+              `${service ? `In ${label[service]} that could be ` : 'That could be '}` +
+              `${modules.map((m) => m.plural).join(', ')}.`,
+            suggestions: modules.map((m) => asked.replace(/\b(records?|data|things?|items?|entries|stuff|anything)\b/i, m.plural))
+              .map((q, i) => (q === asked ? `${asked} - ${modules[i].plural}` : q)),
+          },
+        }, {
+          outcome: 'clarify', zcql: '', rowCount: 0,
+          verdict: `permission action "${action}" named no module; offered ${modules.map((m) => m.module).join(', ')}`,
+        });
+      }
+    }
+
     // A question ABOUT a person that never names one. Asking is the only honest
     // move: guessing would breach rule 4, and refusing sends the engineer back
     // to the debug queue over a missing word.
@@ -886,16 +946,18 @@ app.post('/explore', async (req, res) => {
     const offset = (page - 1) * size;
 
     const columns = ['ROWID', ...table.columnNames.filter((c) => !c.endsWith('_REF'))];
-    const scoped = `${tableName}.ORG_ID = '${store.q(org.ORG_ID)}'`;
+    // Same two axes as the guard: the tenant, and - for the shared platform
+    // tables that carry PRODUCT - the service this session was opened on.
+    const scoped = serviceScope(tableName, table, org, claims, loaded);
 
     const zcql =
-      `SELECT ${columns.map((c) => `${tableName}.${c}`).join(', ')} FROM ${tableName} ` +
-      `WHERE ${scoped} ORDER BY ${tableName}.ROWID LIMIT ${offset}, ${size}`;
+      `SELECT ${columns.map((c) => `${tableName}.${c}`).join(', ')} FROM ${tableName}${scoped.join} ` +
+      `WHERE ${scoped.where} ORDER BY ${tableName}.ROWID LIMIT ${offset}, ${size}`;
 
     const [pageResult, countResult] = await Promise.all([
       replica.read(catalystApp, org, zcql),
       replica.read(catalystApp, org,
-        `SELECT COUNT(ROWID) FROM ${tableName} WHERE ${scoped} LIMIT 0, 1`),
+        `SELECT COUNT(${tableName}.ROWID) FROM ${tableName}${scoped.join} WHERE ${scoped.where} LIMIT 0, 1`),
     ]);
 
     const total = Number(Object.values(countResult.rows[0] ?? {})[0] ?? 0);
@@ -944,6 +1006,38 @@ app.post('/explore', async (req, res) => {
 });
 
 /**
+ * The two axes of the boundary for a browsed table: ORG_ID always, and PRODUCT
+ * when the grant names a service.
+ *
+ * Some tables have no PRODUCT column of their own but belong to a product all
+ * the same - ProfilePermissions is a grant matrix whose product is that of the
+ * profile it points at. Filtering only tables with a PRODUCT column would have
+ * shown a Desk session all 234 grant rows, 156 of them CRM's and Campaigns'.
+ * Those are scoped through the parent: join it, pin its PRODUCT.
+ *
+ * Returns { join, where } so the caller can place each part of the query.
+ */
+function serviceScope(tableName, table, org, claims, loaded) {
+  const service = claims.service && claims.service !== 'all' ? store.q(claims.service) : null;
+  let where = `${tableName}.ORG_ID = '${store.q(org.ORG_ID)}'`;
+  let join = '';
+
+  if (!service) return { join, where };
+
+  if (table.columnNames?.includes('PRODUCT')) {
+    where += ` AND ${tableName}.PRODUCT = '${service}'`;
+    return { join, where };
+  }
+
+  const viaParent = (table.refs ?? []).find((r) => loaded?.byTable?.get(r.parent)?.columnNames?.includes('PRODUCT'));
+  if (viaParent) {
+    join = ` INNER JOIN ${viaParent.parent} ON ${tableName}.${viaParent.column} = ${viaParent.parent}.ROWID`;
+    where += ` AND ${viaParent.parent}.ORG_ID = '${store.q(org.ORG_ID)}' AND ${viaParent.parent}.PRODUCT = '${service}'`;
+  }
+  return { join, where };
+}
+
+/**
  * How many rows each table holds for this customer, so the browser can show
  * what is populated before anyone clicks into an empty table.
  */
@@ -955,8 +1049,9 @@ app.post('/explore/summary', async (req, res) => {
 
     const counts = await Promise.all(tables.map(async (t) => {
       try {
+        const sc = serviceScope(t.name, t, org, claims, loaded);
         const out = await replica.read(catalystApp, org,
-          `SELECT COUNT(ROWID) FROM ${t.name} WHERE ${t.name}.ORG_ID = '${store.q(org.ORG_ID)}' LIMIT 0, 1`);
+          `SELECT COUNT(${t.name}.ROWID) FROM ${t.name}${sc.join} WHERE ${sc.where} LIMIT 0, 1`);
         return { name: t.name, label: t.label, pack: t.pack, rows: Number(Object.values(out.rows[0] ?? {})[0] ?? 0) };
       } catch {
         return { name: t.name, label: t.label, pack: t.pack, rows: null };

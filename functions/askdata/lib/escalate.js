@@ -27,7 +27,7 @@ function draftQuery({ question, orgId, zgid, resolved = {}, loaded }) {
     // Show it scoped, because an unscoped query is not runnable against a
     // shared store and the debug engineer would have to add it themselves.
     return {
-      zcql: withScope(ruled.zcql, orgId),
+      zcql: withScope(ruled.zcql, orgId, loaded),
       basis: `matched the "${ruled.ruleId}" pattern`,
     };
   }
@@ -44,11 +44,22 @@ function draftQuery({ question, orgId, zgid, resolved = {}, loaded }) {
   };
 }
 
-/** Add ORG_ID scoping to a draft, the same way the guard would. */
-function withScope(zcql, orgId) {
+/**
+ * Add ORG_ID scoping to a draft, the same way the guard would - and PRODUCT
+ * scoping on the shared platform tables when the session names a service, so
+ * a debug engineer handed a Desk escalation is not handed a query that would
+ * also read CRM permissions.
+ */
+function withScope(zcql, orgId, loaded = null) {
   const tables = [...String(zcql).matchAll(/\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)/gi)]
     .map((m) => m[1]);
-  const scope = [...new Set(tables)].map((t) => `${t}.ORG_ID = '${orgId}'`).join(' AND ');
+  const service = loaded?.serviceKey && loaded.serviceKey !== 'all' ? loaded.serviceKey : null;
+  const scope = [...new Set(tables)]
+    .flatMap((t) => [
+      `${t}.ORG_ID = '${orgId}'`,
+      ...(service && loaded.byTable?.get(t)?.columnNames?.includes('PRODUCT') ? [`${t}.PRODUCT = '${service}'`] : []),
+    ])
+    .join(' AND ');
   if (!scope) return zcql;
   if (/\bWHERE\b/i.test(zcql)) {
     return zcql.replace(/\bWHERE\b/i, `WHERE ${scope} AND `);

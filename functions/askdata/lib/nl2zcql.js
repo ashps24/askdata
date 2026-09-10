@@ -108,6 +108,14 @@ function systemPrompt(loaded) {
     '- confidence is your own 0-1 estimate that the query answers the question asked.',
     '',
     `The customer's products: ${loaded.productKeys.join(', ') || 'none'}.`,
+    ...(loaded.serviceKey && loaded.serviceKey !== 'all'
+      ? [
+        `THIS SESSION IS SCOPED TO ONE SERVICE: ${loaded.serviceKey}. Profiles, UserProfiles, ` +
+        `Permissions and AuditEvents hold rows for every product; a question about ` +
+        `permissions, profiles or activity means ${loaded.serviceKey}'s only. Always add ` +
+        `PRODUCT = '${loaded.serviceKey}' when you read those tables, and never answer about another product.`,
+      ]
+      : []),
     'Only the tables below exist. A table from a product not listed must be refused,',
     'not queried - answering "0 rows" would read to the customer as "you have none".',
     '',

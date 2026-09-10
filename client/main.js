@@ -534,14 +534,18 @@ function renderClarify(card, result, question) {
   ];
 
   if (result.candidates?.length) {
-    kids.push(h('div', { class: 'candidates' }, result.candidates.map((c) =>
-      h('div', { class: 'candidate' },
-        h('b', { text: c.full_name ?? c.account_name ?? '—' }),
+    kids.push(h('div', { class: 'candidates' }, result.candidates.map((c, i) => {
+      // A candidate is a person, an account, or a module - whichever it is, it
+      // must have a name to show and a question to ask when chosen.
+      const pick = c.suggestion ?? result.suggestions?.[i];
+      return h('div', { class: 'candidate' },
+        h('b', { text: c.full_name ?? c.account_name ?? c.module ?? c.name ?? '—' }),
         c.email ? h('span', { class: 'pii', text: c.email }) : null,
         c.last_login ? h('span', { class: 'dim small', text: `last login ${String(c.last_login).slice(0, 16)}` }) : null,
         c.status ? h('span', { class: 'dim small', text: c.status }) : null,
-        h('button', { class: 'btn-plain', type: 'button', text: 'This one', onclick: () => ask(c.suggestion) })
-      ))));
+        c.product ? h('span', { class: 'dim small', text: c.product }) : null,
+        pick ? h('button', { class: 'btn-plain', type: 'button', text: 'This one', onclick: () => ask(pick) }) : null);
+    })));
   } else if (result.suggestions?.length) {
     kids.push(h('ul', { class: 'starters', style: 'padding:0 15px 12px' }, result.suggestions.slice(0, 6).map((s) =>
       h('li', {}, h('button', { type: 'button', text: s, onclick: () => ask(s) })))));

@@ -347,8 +347,13 @@ const SHAPERS = [
   /* ---- 3. a permission question, answered yes or no with a reason ----- */
   {
     id: 'permission-check',
-    match: ({ tables, columns }) =>
-      tables.includes('ProfilePermissions') && columns.includes('GRANTED'),
+    // A check about ONE PERSON always joins Users. A profile-level query never
+    // does - and when it happened to return a single row this shaper claimed
+    // it and wrote "The user is on the Administrator profile" about a question
+    // that named no user.
+    match: ({ tables, columns, ruleId }) =>
+      ruleId === 'person-permission-specific' ||
+      (!ruleId && tables.includes('Users') && tables.includes('ProfilePermissions') && columns.includes('GRANTED')),
     build: ({ rows, question }) => {
       if (!rows.length) {
         return {
