@@ -54,6 +54,17 @@ const day = (v) => (typeof v === 'string' ? v.slice(0, 10) : time.istDay(v));
  */
 const ago = (days, hour = null, min = 0) => time.daysAgoNaive(days, hour, min);
 
+const USERS_PER_ORG = 12;
+const ASHWIN_P = 7;
+const ASHWIN_M = 10;
+
+if (ASHWIN_P > USERS_PER_ORG || ASHWIN_M > USERS_PER_ORG) {
+  throw new Error(
+    `Seed misconfigured: the Ashwin seats (${ASHWIN_P}, ${ASHWIN_M}) must be within ` +
+    `USERS_PER_ORG (${USERS_PER_ORG}), or the ambiguous-name case silently disappears.`
+  );
+}
+
 /* ------------------------------------------------------------------- orgs */
 
 /**
@@ -105,7 +116,7 @@ const ORGS = COMPANY_SPECS.map(
       serviceOrgIds,
       index: i + 1,
       seed: 1001 + i * 1001,
-      users: 12,
+      users: USERS_PER_ORG,
       leads,
     };
   }
@@ -122,6 +133,19 @@ function orgByServiceId(serviceOrgId, service = null) {
 
 const ENGINEER = process.env.ASKDATA_DEMO_ENGINEER || 'ashwin.p@zohocorp.com';
 
+/**
+ * The two Ashwins, by seat number within Northwind.
+ *
+ * Same first name, different surname, same org - the collision is what proves
+ * the tool asks which person is meant instead of picking one, and without it
+ * that path cannot be tested at all.
+ *
+ * Named constants because they were literals: the second was seat 19, which
+ * stopped existing the moment orgs went from 25 users to 12. Nothing failed
+ * loudly - the second Ashwin simply vanished, taking the ambiguity test with
+ * him and leaving an export row pointing at nobody. Both must stay <= the
+ * per-org user count, which USERS_PER_ORG asserts below.
+ */
 /* -------------------------------------------------------- name generation */
 
 const FIRST = ['Priya', 'Rahul', 'Meera', 'Arjun', 'Divya', 'Karthik', 'Sneha', 'Vikram',
@@ -220,8 +244,8 @@ function buildPlatform() {
 
       // The two Ashwins. Same first name, different surname, same org - this
       // collision is what proves rule 4, and without it that path is untestable.
-      if (org.ORG_ID === 'ORG-NORTHWIND' && i === 7) name = 'Ashwin Prakash';
-      if (org.ORG_ID === 'ORG-NORTHWIND' && i === 19) name = 'Ashwin Menon';
+      if (org.ORG_ID === 'ORG-NORTHWIND' && i === ASHWIN_P) name = 'Ashwin Prakash';
+      if (org.ORG_ID === 'ORG-NORTHWIND' && i === ASHWIN_M) name = 'Ashwin Menon';
       if (org.ORG_ID === 'ORG-CONTOSO' && i === 4) name = 'Meera Raman';
       if (org.ORG_ID === 'ORG-FABRIKAM' && i === 5) name = 'Rahul Iyer';
 
@@ -428,14 +452,15 @@ function buildCrm() {
     // filtered exports, and one that is materially different. Without a real
     // signal in the data the demo proves nothing.
     if (org.ORG_ID === 'ORG-NORTHWIND') {
-      const ap = 'U-1007';
+      const ap = uid(ASHWIN_P);
+      const am = uid(ASHWIN_M);
       out.CRM_ExportJobs.push(
         { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1001', USER_ID: ap, MODULE: 'Leads', FORMAT: 'csv', ROW_COUNT: 48, FILTER_APPLIED: 'Lead Status = Qualified', IP_ADDRESS: '10.14.2.8', STATUS: 'completed', EXPORTED_AT: ago(20, 15, 31) },
         { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1002', USER_ID: ap, MODULE: 'Deals', FORMAT: 'xls', ROW_COUNT: 12, FILTER_APPLIED: 'Stage = Proposal', IP_ADDRESS: '10.14.2.8', STATUS: 'completed', EXPORTED_AT: ago(29, 11, 5) },
         { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1003', USER_ID: ap, MODULE: 'Leads', FORMAT: 'csv', ROW_COUNT: 30, FILTER_APPLIED: 'Owner = me', IP_ADDRESS: '10.14.2.8', STATUS: 'completed', EXPORTED_AT: ago(43, 17, 44) },
         { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1004', USER_ID: ap, MODULE: 'Contacts', FORMAT: 'csv', ROW_COUNT: 4000, FILTER_APPLIED: null, IP_ADDRESS: '203.0.113.77', STATUS: 'completed', EXPORTED_AT: ago(7, 2, 14) },
         // Ashwin Menon: ordinary activity only.
-        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1005', USER_ID: 'U-1019', MODULE: 'Leads', FORMAT: 'csv', ROW_COUNT: 22, FILTER_APPLIED: 'Created this month', IP_ADDRESS: '10.14.2.31', STATUS: 'completed', EXPORTED_AT: ago(12, 10, 2) },
+        { ORG_ID: org.ORG_ID, EXPORT_ID: 'X-1005', USER_ID: am, MODULE: 'Leads', FORMAT: 'csv', ROW_COUNT: 22, FILTER_APPLIED: 'Created this month', IP_ADDRESS: '10.14.2.31', STATUS: 'completed', EXPORTED_AT: ago(12, 10, 2) },
       );
     }
     const startIdx = out.CRM_ExportJobs.filter((e) => e.ORG_ID === org.ORG_ID).length;
@@ -477,7 +502,10 @@ function buildCampaigns() {
   for (const org of ORGS) {
     if (!org.SUBSCRIBED_PRODUCTS.includes('campaigns')) continue;
     const r = rng(org.seed + 22);
-    const prefix = org.ORG_ID === 'ORG-NORTHWIND' ? 1 : 2;
+    // org.index, not a hardcoded map. This was a three-way ternary from when
+    // there were exactly three customers; at ten it minted user ids for orgs
+    // that do not own them, and every join through Users came back empty.
+    const prefix = org.index;
     const uid = (n) => `U-${prefix}0${String(n).padStart(2, '0')}`;
 
     for (let i = 1; i <= 6; i++) {
@@ -485,7 +513,7 @@ function buildCampaigns() {
         ORG_ID: org.ORG_ID, LIST_ID: `L-${prefix}${String(i).padStart(2, '0')}`,
         LIST_NAME: pick(r, ['Newsletter Subscribers', 'Trade Show Leads', 'Existing Customers',
           'Webinar Registrants', 'Partner Contacts', 'Dormant Accounts']) + ` ${i}`,
-        CONTACT_COUNT: int(r, 200, 9000), OWNER_ID: uid(int(r, 1, 20)),
+        CONTACT_COUNT: int(r, 200, 9000), OWNER_ID: uid(int(r, 1, org.users)),
         CREATED_ON: ago(int(r, 30, 500)),
       });
     }
@@ -495,7 +523,7 @@ function buildCampaigns() {
         ORG_ID: org.ORG_ID, SEGMENT_ID: `S-${prefix}${String(i).padStart(2, '0')}`,
         LIST_ID: l.LIST_ID, SEGMENT_NAME: `${['Opened last 30d', 'Never opened', 'Clicked twice', 'India only', 'Enterprise only', 'Bounced', 'High intent', 'Cold'][i - 1]}`,
         CRITERIA: pick(r, ['opens > 0', 'opens = 0', 'clicks >= 2', 'country = IN', 'employees > 500', 'bounced = true']),
-        CREATED_BY: uid(int(r, 1, 20)), CREATED_ON: ago(int(r, 10, 300)),
+        CREATED_BY: uid(int(r, 1, org.users)), CREATED_ON: ago(int(r, 10, 300)),
       });
     }
     for (let i = 1; i <= 10; i++) {
@@ -507,7 +535,7 @@ function buildCampaigns() {
         SENT_COUNT: i > 8 ? 0 : int(r, 150, 8000),
         OPEN_RATE: i > 8 ? 0 : Number((r() * 45 + 8).toFixed(2)),
         SENT_ON: i > 8 ? null : ago(int(r, 3, 200)),
-        CREATED_BY: uid(int(r, 1, 20)),
+        CREATED_BY: uid(int(r, 1, org.users)),
       });
     }
   }
@@ -519,7 +547,10 @@ function buildDesk() {
   for (const org of ORGS) {
     if (!org.SUBSCRIBED_PRODUCTS.includes('desk')) continue;
     const r = rng(org.seed + 33);
-    const prefix = org.ORG_ID === 'ORG-NORTHWIND' ? 1 : 3;
+    // org.index, not a hardcoded map. This was a three-way ternary from when
+    // there were exactly three customers; at ten it minted user ids for orgs
+    // that do not own them, and every join through Users came back empty.
+    const prefix = org.index;
     const uid = (n) => `U-${prefix}0${String(n).padStart(2, '0')}`;
 
     const names = ['General', 'Billing', 'Technical', 'Escalations', 'Onboarding'];
@@ -548,7 +579,10 @@ function buildDesk() {
       addMember('U-3005', 'Billing', 'agent');
       addMember('U-3005', 'Technical', 'lead');
     }
-    for (let i = 1; i <= 18; i++) {
+    // Bounded by the org's real user count. It was a fixed 18 from when every
+    // org had 25 users; with 12 it invented six people per org and left 97
+    // dangling department memberships that no join could resolve.
+    for (let i = 1; i <= org.users; i++) {
       const u = uid(i);
       if (u === 'U-3005') continue;
       addMember(u, names[i % names.length], pick(r, ['agent', 'agent', 'lead', 'manager']));
@@ -564,7 +598,7 @@ function buildDesk() {
           'Duplicate records created', 'Email not delivered', 'API returns 401']),
         STATUS: i % 4 === 0 ? 'Closed' : pick(r, ['Open', 'On Hold', 'Escalated']),
         TICKET_PRIORITY: pick(r, ['Low', 'Medium', 'High', 'Urgent']),
-        ASSIGNEE_ID: uid(int(r, 1, 18)),
+        ASSIGNEE_ID: uid(int(r, 1, org.users)),
         CONTACT_EMAIL: `customer${i}@${COMPANIES[i % COMPANIES.length].split(' ')[0].toLowerCase()}.example.com`,
         CREATED_ON: ago(int(r, 1, 120), int(r, 8, 19), int(r, 0, 59)),
       });
@@ -813,5 +847,5 @@ async function backfillRefs(catalystApp) {
   };
 }
 
-module.exports = { seed, backfillRefs, canWrite, AUDIT_PER_ORG, STAGES, ORGS, ENGINEER,
+module.exports = { seed, backfillRefs, canWrite, wipeTable, AUDIT_PER_ORG, STAGES, ORGS, ENGINEER,
   orgByServiceId, SERVICE_PREFIX, buildPlatform, buildCrm, buildCampaigns, buildDesk, buildAudit };

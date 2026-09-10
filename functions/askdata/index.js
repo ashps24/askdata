@@ -994,6 +994,125 @@ function adminOk(req) {
   return Boolean(expected) && req.get('x-askdata-admin') === expected;
 }
 
+/**
+ * Seed by BULK WRITE instead of row inserts.
+ *
+ * Row-by-row `insertRow` is metered as "Datastore - Insert", and that free-tier
+ * allowance is exhausted on this project. Bulk write takes a CSV through File
+ * Store and may be metered differently - so this exists to find out, and to be
+ * the loading path if it is.
+ *
+ * Foreign keys are deliberately left out of the CSV. The _REF columns are
+ * resolved afterwards by /admin/provision-refs, which uses UPDATE - a different
+ * operation again, and one that is known to still work here.
+ */
+const SEED_CSV_FOLDER = process.env.ASKDATA_SEED_FOLDER_ID || '30663000000140379';
+
+/** RFC4180-ish: quote everything, double the quotes. Empty stays empty. */
+function csvCell(value) {
+  if (value === null || value === undefined) return '';
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+function toCsv(rows, columns) {
+  const lines = [columns.join(',')];
+  for (const row of rows) lines.push(columns.map((c) => csvCell(row[c])).join(','));
+  return lines.join('\n');
+}
+
+app.post('/admin/bulk-seed', async (req, res) => {
+  if (!adminOk(req)) return res.status(403).json({ error: 'Admin token required.' });
+
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const seed = require('./lib/seed');
+
+  const started = Date.now();
+  const catalystApp = catalyst.initialize(req);
+  const wanted = String(req.body?.table ?? '').trim();
+  const stage = String(req.body?.only ?? '').trim();
+
+  try {
+    if (req.body?.audit_per_org) {
+      seed.AUDIT_PER_ORG.value = Math.max(1, Math.min(2000, Number(req.body.audit_per_org)));
+    }
+
+    // Build only what was asked for, so a failure is attributable to one table.
+    const built = {};
+    for (const [name, build] of Object.entries(seed.STAGES)) {
+      if (stage && name !== stage) continue;
+      Object.assign(built, build());
+    }
+    const tables = wanted ? [wanted] : Object.keys(built);
+
+    const wipe = req.body?.wipe === true;
+    const results = [];
+    for (const table of tables) {
+      const rows = built[table];
+      if (!rows?.length) { results.push({ table, skipped: 'no rows generated' }); continue; }
+
+      // Replace rather than append: a second load would otherwise duplicate
+      // every row. Deletes are ZCQL and are metered separately from inserts,
+      // which is why this works while row-by-row seeding does not.
+      let wiped = null;
+      if (wipe) {
+        await seed.wipeTable(catalystApp, table);
+        wiped = true;
+      }
+
+      // Business columns only. _REF foreign keys are filled in afterwards.
+      const columns = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter((c) => !c.endsWith('_REF'));
+      const csv = toCsv(rows, columns);
+
+      const tmp = path.join(os.tmpdir(), `${table}-${Date.now()}.csv`);
+      fs.writeFileSync(tmp, csv, 'utf8');
+
+      let uploaded;
+      try {
+        uploaded = await catalystApp.filestore().folder(SEED_CSV_FOLDER).uploadFile({
+          code: fs.createReadStream(tmp), name: `${table}.csv`,
+        });
+      } finally {
+        try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+      }
+
+      const job = await catalystApp.datastore().table(table)
+        .bulkJob('write')
+        .createJob(String(uploaded.id), { operation: 'insert' });
+
+      results.push({
+        table, rows: rows.length, columns: columns.length, wiped,
+        file_id: String(uploaded.id), job_id: job.job_id, status: job.status,
+      });
+    }
+
+    res.json({ ok: true, results, ms: Date.now() - started });
+  } catch (err) {
+    console.error('bulk seed failed:', err);
+    res.status(500).json({ ok: false, error: err.message, ms: Date.now() - started });
+  }
+});
+
+app.get('/admin/bulk-status', async (req, res) => {
+  if (!adminOk(req)) return res.status(403).json({ error: 'Admin token required.' });
+  const catalystApp = catalyst.initialize(req);
+  const table = String(req.query.table ?? '').trim();
+  const jobId = String(req.query.job ?? '').trim();
+  if (!table || !jobId) return res.status(400).json({ error: 'Pass table and job.' });
+
+  try {
+    const status = await catalystApp.datastore().table(table).bulkJob('write').getStatus(jobId);
+    res.json({
+      job_id: status.job_id, status: status.status,
+      details: status.results ?? status.query ?? null,
+      more: status,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/admin/seed', async (req, res) => {
   if (!adminOk(req)) return res.status(403).json({ error: 'Admin token required.' });
   const started = Date.now();
