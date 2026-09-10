@@ -94,6 +94,16 @@ app.get('/health', (req, res) => {
   });
 });
 
+/**
+ * Is the model translator wired up, and if not, what exactly is missing?
+ *
+ * There are two prerequisites and they fail in ways that look alike, so this
+ * separates them and names the next step. Reporting "model unavailable" sent
+ * someone looking at the Connection when the real problem was that GLM serving
+ * is provisioned per project and this project is not one of them.
+ *
+ * Reports shape only. No token material is ever printed - see probeConnection.
+ */
 app.get('/diag', async (req, res) => {
   const catalystApp = catalyst.initialize(req);
   const connection = await probeConnection(catalystApp, llm.CONNECTION_LINK_NAME);
@@ -109,7 +119,39 @@ app.get('/diag', async (req, res) => {
       model = { ok: false, ms: Date.now() - started, error: err.message };
     }
   }
-  res.json({ connection, model, engineerIdentity: process.env.ASKDATA_ENV ?? 'Development' });
+
+  const setup = { ready: connection.ok && model.ok, steps: [] };
+
+  setup.steps.push({
+    step: 'Connection',
+    name: llm.CONNECTION_LINK_NAME,
+    done: connection.ok,
+    todo: connection.ok ? null
+      : `Catalyst console -> project AskData -> Connections -> create one named exactly ` +
+        `"${llm.CONNECTION_LINK_NAME}" with scope QuickML.deployment.READ, then authorize it.`,
+    detail: connection.ok ? null : connection.error,
+  });
+
+  setup.steps.push({
+    step: 'GLM serving project',
+    project: process.env.ASKDATA_QUICKML_PROJECT_ID || process.env.CATALYST_PROJECT_ID || null,
+    configured: Boolean(process.env.ASKDATA_QUICKML_PROJECT_ID),
+    done: model.ok,
+    todo: model.ok ? null
+      : 'GLM serving is provisioned per project. If the Connection resolves but this ' +
+        'still fails, point ASKDATA_QUICKML_PROJECT_ID at a project where QuickML is ' +
+        'enabled and redeploy.',
+    detail: model.ok ? null : (model.error ?? model.skipped),
+  });
+
+  setup.next = setup.ready
+    ? 'Nothing - the model translator is live. Answers will report engine "model".'
+    : setup.steps.find((s) => !s.done)?.todo ?? null;
+
+  // Answers keep working either way; this only decides which engine writes them.
+  setup.fallback = `${rules.RULES.length} deterministic rules, labelled "rules" on every answer.`;
+
+  res.json({ setup, connection, model, engineerIdentity: process.env.ASKDATA_ENV ?? 'Development' });
 });
 
 app.get('/orgs', async (req, res) => {

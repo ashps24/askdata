@@ -14,31 +14,67 @@ engineer and a technical `verdict` for the audit log.
 
 ## Status
 
-**Code complete and unit-verified. Not yet deployed** — it needs its own
-Catalyst project, which only the console can create (the CLI and MCP cannot).
-
-Create a project named **`askdata`**, then:
+**Live.** https://askdata-876513394.development.catalystserverless.com/app/index.html
+Project `AskData` / `30663000000121440` · org `876513394` · Development · US DC.
 
 ```bash
 cd functions/askdata && npm install && cd ../..
 catalyst deploy --org 876513394
 ```
 
-Then provision and seed (staged, because 2,797 rows will not fit in one
-30-second invocation):
-
-```bash
-BASE=https://askdata-876513394.development.catalystserverless.com/server/askdata
-for stage in platform crm campaigns desk audit; do
-  curl -s -X POST "$BASE/admin/seed" -H 'x-askdata-admin: askdata-dev-admin-2026' \
-       -H 'Content-Type: application/json' -d "{\"only\":\"$stage\"}"
-done
-curl -s -X POST "$BASE/admin/provision-refs" -H 'x-askdata-admin: askdata-dev-admin-2026'
-```
-
 `node scripts/provision-payloads.mjs` prints the 21 table and 168 column
 payloads for the MCP calls, derived from the packs so the Data Store schema and
 the guard's allow-list cannot drift apart.
+
+### What still needs you
+
+Two things are blocked on actions only you can take. Neither stops the app
+working — every question in the Starters panel is answered today.
+
+**1. Data Store insert allowance is exhausted.** Reads and updates still work,
+so the app answers normally, but no audit row can be written (every answer
+carries a red "not recorded in the audit log" banner, and `/ask` would refuse
+outright if `ASKDATA_ENV=Production`), and the ten-company sample cannot be
+loaded. Enable a payment method on the project, then:
+
+```bash
+BASE=https://askdata-876513394.development.catalystserverless.com/server/askdata
+curl -s -X POST "$BASE/admin/seed" -H 'x-askdata-admin: askdata-dev-admin-2026' \
+     -H 'Content-Type: application/json' -d '{"audit_per_org":60}'
+curl -s -X POST "$BASE/admin/provision-refs" -H 'x-askdata-admin: askdata-dev-admin-2026'
+```
+
+That is ~5,158 inserts for all ten companies. The seeder probes with a single
+row first and **refuses to start if writes are unavailable**, because it wipes
+each table before refilling it — an earlier run lost four stages that way.
+
+**2. The model translator needs a Connection only you can authorize.**
+Catalyst console → project **AskData** → **Connections** → create one named
+exactly **`quickmlcon`** with scope **`QuickML.deployment.READ`**, and
+authorize it. It cannot be created from the CLI or MCP: it needs an OAuth
+client secret and an interactive consent grant.
+
+`ASKDATA_QUICKML_PROJECT_ID` is already pointed at `30663000000079001`
+(`tam-qbr`), the only project in this org where QuickML is enabled — GLM
+serving is provisioned per project, and AskData's own project is not one, so
+leaving it unset would 404 *after* the Connection started working and look
+like a broken Connection.
+
+Check both at any time with `GET /diag`, which reports each step, what is
+still missing, and the exact next action — without printing any token
+material:
+
+```json
+{ "setup": { "ready": false,
+             "next": "Catalyst console -> ... create one named exactly \"quickmlcon\" ...",
+             "fallback": "32 deterministic rules, labelled \"rules\" on every answer." } }
+```
+
+Until the Connection exists every answer is labelled **`RULES`**, so nobody
+mistakes a pattern-matched answer for a translated one. Misspellings are still
+handled — `lib/spell.js` corrects against the schema's own lexicon before
+either engine runs, and is deliberately independent of the model for exactly
+this reason.
 
 ### What is real, and what is modelled
 
