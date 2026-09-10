@@ -7,6 +7,7 @@
  */
 
 const { flattenRows } = require('./replica');
+const spool = require('./spool');
 
 const q = (v) => String(v ?? '').replace(/'/g, "''");
 const clip = (v, n) => {
@@ -184,8 +185,17 @@ async function logQuery(catalystApp, entry) {
 
   try {
     await catalystApp.datastore().table('SupportQueryLog').insertRow(row);
-    return { ok: true, logId: row.LOG_ID };
+    return { ok: true, logId: row.LOG_ID, spooled: false };
   } catch (err) {
+    // The table could not take the row. Hold it rather than lose it: the
+    // spool is durable and enumerable, and /admin/audit-drain moves entries
+    // into SupportQueryLog by bulk write, which is a different meter.
+    const held = await spool.write(catalystApp, row);
+    if (held.ok) {
+      console.warn(`askdata audit spooled (insert unavailable): ${err.message}`);
+      return { ok: true, logId: row.LOG_ID, spooled: true, reason: err.message };
+    }
+
     // "Every query is audited" is one of this tool's four guarantees, so an
     // audit write that fails is a security event in its own right - not a
     // warning to bury. It was buried once: an exhausted insert quota stopped

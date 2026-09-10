@@ -31,11 +31,28 @@ the guard's allow-list cannot drift apart.
 Two things are blocked on actions only you can take. Neither stops the app
 working — every question in the Starters panel is answered today.
 
-**1. Data Store insert allowance is exhausted.** Reads and updates still work,
-so the app answers normally, but no audit row can be written (every answer
-carries a red "not recorded in the audit log" banner, and `/ask` would refuse
-outright if `ASKDATA_ENV=Production`), and the ten-company sample cannot be
-loaded. Enable a payment method on the project, then:
+**1. Data Store write allowances are exhausted.** Reads, updates and deletes
+still work, so the app answers normally. Two consequences:
+
+*Sample data* was loaded through bulk write, which is metered separately from
+row inserts - `/admin/bulk-seed` generates a CSV per table, uploads it and
+starts a job. All ten companies are loaded. That allowance is now spent too.
+
+*Audit rows* are no longer lost. `insertRow` fails, so `lib/spool.js` holds each
+entry in Stratus instead - one object per entry, durable and enumerable - and
+`/audit` merges them in, marked `pending`, so a reviewer sees the whole trail.
+`/admin/audit-drain` moves them into `SupportQueryLog` by bulk write and deletes
+them only once the rows have landed; it is waiting on the same allowance.
+
+Enable a payment method on the project, then drain the spool and, if you want
+to reload the sample data from scratch:
+
+```bash
+BASE=https://askdata-876513394.development.catalystserverless.com/server/askdata
+curl -s -X POST "$BASE/admin/audit-drain" -H 'x-askdata-admin: askdata-dev-admin-2026' \
+     -H 'Content-Type: application/json' -d '{}'
+```
+
 
 ```bash
 BASE=https://askdata-876513394.development.catalystserverless.com/server/askdata

@@ -54,6 +54,7 @@ const escalate = require('./lib/escalate');
 const nl2zcql = require('./lib/nl2zcql');
 const llm = require('./lib/llm');
 const spell = require('./lib/spell');
+const spool = require('./lib/spool');
 const { probeConnection } = require('./lib/connection');
 
 const app = express();
@@ -411,9 +412,9 @@ app.post('/ask', async (req, res) => {
         : log.verdict,
     });
 
-    // Fail closed: an answer with no audit row is the one outcome this tool
-    // promises is impossible. In development it is downgraded to a visible
-    // warning so the app still demonstrates - see store.requireAudit.
+    // Fail closed only when there is genuinely NO record. A spooled entry is a
+    // record - durable, enumerable, and drained into the table by bulk write -
+    // so it satisfies the guarantee even though the table has not caught up.
     if (!audit.ok && store.requireAudit()) {
       return res.status(503).json({
         mode: 'refused',
@@ -432,12 +433,19 @@ app.post('/ask', async (req, res) => {
       ...(spelled.changed
         ? { interpreted_as: asked, corrections: spelled.corrections }
         : {}),
-      ...(audit.ok ? {} : {
-        audit: {
-          written: false,
-          warning: 'This query was NOT recorded in the audit log. Do not rely on it for a review.',
-          error: audit.error,
-        },
+      ...(audit.ok && !audit.spooled ? {} : {
+        audit: audit.ok
+          ? {
+            written: true,
+            pending: true,
+            note: 'Recorded, and waiting to be written into the audit table.',
+            reason: audit.reason,
+          }
+          : {
+            written: false,
+            warning: 'This query was NOT recorded in the audit log. Do not rely on it for a review.',
+            error: audit.error,
+          },
       }),
       grant: { expires_at: new Date(claims.expiresAt * 1000).toISOString(), seconds_left: claims.secondsLeft },
       latency_ms: latencyMs,
@@ -976,11 +984,29 @@ app.get('/audit', async (req, res) => {
     const rows = orgId
       ? await store.recentLog(catalystApp, orgId, Number(req.query.limit) || 100)
       : await store.fullLog(catalystApp, Number(req.query.limit) || 300);
-    const byOutcome = rows.reduce((acc, r) => {
+    // Entries still in the spool are part of the trail and must be visible
+    // here, or a reviewer would read "no record" for a question that was
+    // recorded a moment ago. They are marked pending so the two are never
+    // confused.
+    let pending = [];
+    try {
+      pending = (await spool.list(catalystApp, 200))
+        .map(({ row }) => ({ ...row, PENDING: true }))
+        .filter((r) => !orgId || r.ORG_ID === orgId);
+    } catch { /* the table's own rows are still worth returning */ }
+
+    const log = [...pending.reverse(), ...rows];
+    const byOutcome = log.reduce((acc, r) => {
       acc[r.OUTCOME] = (acc[r.OUTCOME] ?? 0) + 1;
       return acc;
     }, {});
-    res.json({ count: rows.length, by_outcome: byOutcome, log: rows });
+    res.json({
+      count: log.length,
+      in_table: rows.length,
+      pending_in_spool: pending.length,
+      by_outcome: byOutcome,
+      log,
+    });
   } catch (err) {
     console.error('/audit failed:', err);
     res.status(500).json({ error: 'Could not read the audit log.' });
@@ -988,6 +1014,76 @@ app.get('/audit', async (req, res) => {
 });
 
 /* ================================================================== admin */
+
+/**
+ * Move spooled audit entries into SupportQueryLog.
+ *
+ * Bulk write, because that is the meter that still works. Entries are deleted
+ * only after the job reports Completed - a drain that deleted first and failed
+ * second would destroy the very records it exists to protect.
+ */
+app.post('/admin/audit-drain', async (req, res) => {
+  if (!adminOk(req)) return res.status(403).json({ error: 'Admin token required.' });
+  const started = Date.now();
+  const catalystApp = catalyst.initialize(req);
+
+  try {
+    const entries = await spool.list(catalystApp, Number(req.body?.limit) || 200);
+    if (!entries.length) {
+      return res.json({ ok: true, drained: 0, note: 'Spool is empty.', ms: Date.now() - started });
+    }
+
+    const rows = entries.map((e) => e.row);
+    const columns = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+    const csv = [columns.join(',')]
+      .concat(rows.map((r) => columns.map((c) => csvCell(r[c])).join(',')))
+      .join('\n');
+
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const tmp = path.join(os.tmpdir(), `audit-drain-${Date.now()}.csv`);
+    fs.writeFileSync(tmp, csv, 'utf8');
+
+    let uploaded;
+    try {
+      uploaded = await catalystApp.filestore().folder(SEED_CSV_FOLDER).uploadFile({
+        code: fs.createReadStream(tmp), name: 'SupportQueryLog.csv',
+      });
+    } finally {
+      try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+    }
+
+    const table = catalystApp.datastore().table('SupportQueryLog');
+    const job = await table.bulkJob('write').createJob(String(uploaded.id), { operation: 'insert' });
+
+    // Poll briefly. Deleting before the rows land would lose them outright.
+    let status = job.status;
+    for (let i = 0; i < 12 && status === 'In-Progress'; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      status = (await table.bulkJob('write').getStatus(job.job_id)).status;
+    }
+
+    if (status !== 'Completed') {
+      return res.json({
+        ok: false, drained: 0, job_id: job.job_id, status,
+        note: 'Rows not confirmed yet - nothing deleted. Re-run to retry.',
+        ms: Date.now() - started,
+      });
+    }
+
+    const removed = await spool.remove(catalystApp, entries.map((e) => e.key));
+    res.json({
+      ok: true, drained: rows.length, removed_from_spool: removed,
+      job_id: job.job_id, status, ms: Date.now() - started,
+    });
+  } catch (err) {
+    console.error('audit drain failed:', err);
+    res.status(500).json({ ok: false, error: err.message, ms: Date.now() - started });
+  }
+});
+
+
 
 function adminOk(req) {
   const expected = process.env.ASKDATA_ADMIN_TOKEN;

@@ -469,6 +469,27 @@ function escalateBlock(question, draft) {
  * the wrong answer the engineer needs to see why, and if it produced a refusal
  * they need to know whether the refusal was of their question or of ours.
  */
+/**
+ * The audit state of one result.
+ *
+ * Three states, and conflating them would be dishonest in both directions:
+ * written to the table (say nothing), held in the spool and not yet written
+ * (say so, calmly - the record exists), or not recorded at all (say so
+ * loudly - the engineer is about to paste this into a customer's ticket on
+ * the strength of a trail that does not exist).
+ */
+function auditNote(result) {
+  const audit = result.audit;
+  if (!audit) return null;
+  if (audit.written === false) {
+    return h('p', { class: 'audit-gap', text: `Not recorded in the audit log — ${audit.error ?? 'the audit write failed'}` });
+  }
+  if (audit.pending) {
+    return h('p', { class: 'audit-pending', text: 'Recorded — waiting to be written into the audit table.' });
+  }
+  return null;
+}
+
 function interpretedNote(result) {
   if (!result.interpreted_as) return null;
   const fixes = (result.corrections ?? []).map((c) => `${c.from} → ${c.to}`).join(', ');
@@ -495,9 +516,7 @@ function renderAnswer(card, result, question) {
     // An unaudited answer has to look wrong. The engineer is about to paste it
     // into a customer-visible ticket on the strength of a trail that does not
     // exist.
-    result.audit && result.audit.written === false
-      ? h('p', { class: 'audit-gap', text: `Not recorded in the audit log — ${result.audit.error ?? 'the audit write failed'}` })
-      : null,
+    auditNote(result),
     ticketBlock(result),
     renderTable(result),
     queryBlock(result)
@@ -691,9 +710,7 @@ function renderTablePage(r) {
       ? h('p', { class: 'browse-empty', text: r.empty_reason })
       : renderTable({ ...r, tables: [r.table], highlights: [], alwaysOpen: true }),
     pager,
-    r.audit && r.audit.written === false
-      ? h('p', { class: 'audit-gap', text: `Not recorded in the audit log — ${r.audit.error}` })
-      : null,
+    auditNote(r),
     h('details', { class: 'query' },
       h('summary', { text: 'Show query' }),
       h('pre', { text: r.zcql })));
@@ -709,14 +726,19 @@ function renderStarters(list) {
 
 async function loadAudit() {
   try {
-    const { log } = await api('/audit?limit=40');
-    fill(ui.audit, log.length
-      ? log.map((r) => h('div', { class: `log ${r.OUTCOME}` },
-        h('div', { class: 'q', text: r.QUESTION }),
-        h('div', { class: 'm' },
-          h('span', { class: 'badge', text: r.OUTCOME }),
-          ` · ${r.ZGID} · ${r.TICKET_ID} · ${r.ROW_COUNT} rows · ${r.LATENCY_MS} ms`)))
-      : [h('p', { class: 'dim small', text: 'Nothing logged yet.' })]);
+    const { log, pending_in_spool: pendingCount } = await api('/audit?limit=40');
+    fill(ui.audit,
+      pendingCount
+        ? h('p', { class: 'audit-pending', text: `${pendingCount} entries recorded and waiting to be written into the audit table.` })
+        : null,
+      ...(log.length
+        ? log.map((r) => h('div', { class: `log ${r.OUTCOME}${r.PENDING ? ' is-pending' : ''}` },
+          h('div', { class: 'q', text: r.QUESTION }),
+          h('div', { class: 'm' },
+            h('span', { class: 'badge', text: r.OUTCOME }),
+            r.PENDING ? h('span', { class: 'badge badge-pending', text: 'pending' }) : null,
+            ` · ${r.ZGID} · ${r.TICKET_ID} · ${r.ROW_COUNT} rows · ${r.LATENCY_MS} ms`)))
+        : [h('p', { class: 'dim small', text: 'Nothing logged yet.' })]));
   } catch {
     fill(ui.audit, h('p', { class: 'dim small', text: 'Audit log unavailable.' }));
   }

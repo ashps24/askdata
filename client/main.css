@@ -362,3 +362,22 @@ details.rows .table-wrap { border-top: 1px solid var(--line); }
 .interpreted b { color: var(--ink); font-weight: 600; }
 
 #ticket-hint { display: block; margin-top: 4px; }
+
+/* Recorded, but not yet in the table. Informational, not alarming - the
+   trail exists; only its final resting place is behind. */
+.audit-pending {
+  margin: 8px 0 0;
+  padding: 7px 11px;
+  border-left: 3px solid #b0873a;
+  background: rgba(190, 150, 60, 0.10);
+  color: #d8bd6a;
+  font-size: 12px;
+  border-radius: 0 4px 4px 0;
+}
+.log.is-pending { opacity: 0.92; }
+.badge-pending {
+  margin-left: 5px;
+  border: 1px dashed #b0873a;
+  color: #d8bd6a;
+  background: transparent;
+}
