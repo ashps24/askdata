@@ -32,44 +32,92 @@ const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
 /* --------------------------------------------------- 1. mutation intent */
 
 /**
- * Does this question ask for a CHANGE?
+ * Does this question ASK ASKDATA TO CHANGE SOMETHING?
  *
- * Checked on the question, before any translation, because rule 1 is not a
- * guard concern - it is a product boundary. A support engineer looking at a
- * customer's live production data must not have a path that mutates it: every
- * misunderstood question would become a customer-visible incident, and the tool
- * itself would become an insider-risk surface. Fixes go through the debug
- * engineer, who has change control, review and a rollback story.
+ * WHAT THIS IS NOT
+ *
+ * It is not what keeps the tool read-only. lib/guard.js is: it refuses any
+ * non-SELECT verb unconditionally, logs it as a security event, and there is
+ * no write path to disable. This check only decides WHICH MESSAGE the engineer
+ * sees - "I only read data, here is the escalation" instead of whatever the
+ * guard would have said.
+ *
+ * That asymmetry decides how it should be tuned, and the original got it
+ * backwards. Firing wrongly tells an engineer with a perfectly good read
+ * question that they asked to write - twice now, on "my user cannot create a
+ * segment" and on "how many of them have lead create permission" - and sends
+ * them back to the escalation queue the tool exists to empty. Failing to fire
+ * costs nothing: the guard still refuses, just with different wording.
+ *
+ * So this is deliberately narrow. It fires only when the sentence is shaped
+ * like a REQUEST, and never merely because a change verb appears - because in
+ * this domain the change verbs are also the names of the permissions.
+ * "Lead create permission" contains "create" and asks for nothing.
  */
-const MUTATION = [
-  /\b(delete|remove|drop|purge|wipe|clear)\b.*\b(lead|leads|contact|contacts|user|users|record|records|deal|deals|ticket|tickets|all)\b/,
-  /\b(set|change|update|edit|modify|fix|correct|reset|revert|restore)\b.*\b(to|back to|as|=)\b/,
-  /\b(add|create|assign|grant|enable|disable|deactivate|activate|suspend)\b.*\b(user|users|permission|profile|licence|license|department|segment)\b/,
-  // First and second person: the engineer is asking AskData to do it. Kept
-  // separate from the patterns above because those need a target value
-  // ("set X to Y") - "can i update the lead source" has none, and was falling
-  // through to the translator, where the guard refused it for the right reason
-  // but with the wrong explanation.
-  /\bcan\s+(you|we|i)\b.*\b(change|set|update|edit|modify|fix|correct|reset|revert|delete|remove|drop|purge|add|create|grant|enable|disable|assign|merge)\b/,
-  /\b(please|pls)\b.*\b(change|set|update|edit|modify|fix|correct|reset|revert|restore|delete|remove|drop|purge|add|create|grant|enable|disable|deactivate|activate|suspend|assign|merge)\b/,
-  /\bmerge\b|\bbulk update\b|\bmass delete\b/,
-];
+
+/** Verbs that would change something, in their bare (imperative) forms. */
+const CHANGE_VERB =
+  'delete|remove|drop|purge|wipe|clear|set|change|update|edit|modify|fix|correct|' +
+  'reset|revert|restore|add|create|assign|grant|revoke|enable|disable|deactivate|' +
+  'activate|suspend|merge|rename|archive|convert|import|upload';
+
+/** Nouns that make a sentence be ABOUT capability rather than asking for it. */
+const CAPABILITY_NOUN =
+  /\b(permission|permissions|privilege|privileges|entitlement|entitlements|access|rights)\b/;
+
+/** Verbs that change WHO HAS a permission, as opposed to naming one. */
+const GRANTING_VERB =
+  /\b(grant|grants|granting|revoke|revokes|revoking|give|gives|giving|assign|assigns|assigning|enable|enables|enabling|disable|disables|disabling|add|adds|adding|remove|removes|removing|take away)\b/;
 
 /**
- * Frames that mention a change verb while ASKING about it rather than
- * requesting it.
- *
- * "my user cannot create a segment, why" is the single most common support
- * question there is, and it is pure read: it resolves to a permission lookup.
- * Matching `create` + `segment` and refusing it would make the tool useless for
- * exactly the case it was built for - the engineer would go back to escalating.
- *
- * Two frames are safe to admit:
- *   an inability marker ("cannot", "unable to", "denied", "doesn't have"),
- *     which describes a state rather than asking for one;
- *   "can <somebody> <verb>", where the subject is a third party. Note the
- *     exclusion of you/we/I - "can you please delete these leads" IS a request,
- *     and must keep falling through to MUTATION below.
+ * A question, not an instruction. "How many of them have lead create
+ * permission" opens with "how many" and is therefore asking something, whoever
+ * else it mentions. The exception is a question addressed AT AskData - "can
+ * you delete these" is interrogative in form and a request in substance - and
+ * that is handled by REQUEST below, which is checked first.
+ */
+const INTERROGATIVE =
+  /^\s*(?:so\s+|and\s+|also\s+|then\s+|ok\s+|okay\s+)*(how|who|whom|whose|which|what|when|where|why|is|are|was|were|do|does|did|has|have|had|could|should|will|would|any|are there|list|show|tell|give|find|count|display)\b/;
+
+/**
+ * Shapes that are genuinely requests. Each one addresses AskData or issues an
+ * instruction; none of them fire on a sentence that merely names a permission.
+ */
+const REQUEST = [
+  // "can you / can we / can I <change verb>"
+  new RegExp(String.raw`\bcan\s+(you|we|i|u)\b[^.?!]*\b(${CHANGE_VERB})\b`),
+  // "could you", "would you", "will you" + change verb
+  new RegExp(String.raw`\b(could|would|will)\s+(you|we)\b[^.?!]*\b(${CHANGE_VERB})\b`),
+  // "please <change verb>", anywhere
+  new RegExp(String.raw`\b(please|pls|kindly)\b[^.?!]*\b(${CHANGE_VERB})\b`),
+  // "I need you to <change verb>", "we want to <change verb>"
+  new RegExp(String.raw`\b(i|we)\s+(need|want|would like)\b[^.?!]*\bto\s+(${CHANGE_VERB})\b`),
+  // An imperative opener: the sentence STARTS with a change verb.
+  new RegExp(String.raw`^\s*(?:just\s+|now\s+|quickly\s+)?(${CHANGE_VERB})\b`),
+  // "set X to Y" / "change the source to Referral" - a verb with a target value.
+  new RegExp(String.raw`\b(set|change|update|reset|revert|move|rename)\b[^.?!]*\b(to|back to)\s+\S`),
+  // Explicitly bulk operations.
+  /\b(bulk|mass)\s+(update|delete|import|edit|assign)\b/,
+  // Granting a permission TO somebody is a change, however it is phrased.
+  new RegExp(String.raw`\b(grant|revoke|take away)\b[^.?!]*` + CAPABILITY_NOUN.source),
+];
+
+function requestShape(q) {
+  return REQUEST.some((re) => re.test(q));
+}
+
+/**
+ * Is this asking ABOUT permissions rather than asking to change them?
+ * A capability noun with no granting verb is a description, not an
+ * instruction - which is the whole of "how many users have create permission".
+ */
+function aboutCapability(q) {
+  return CAPABILITY_NOUN.test(q) && !GRANTING_VERB.test(q);
+}
+
+/**
+ * Frames that describe an inability, or ask whether a third party is able to
+ * do something. Both are pure reads that resolve to a permission lookup.
  */
 const DIAGNOSTIC = [
   /\b(can'?t|cannot|can not|unable to|not able to|couldn'?t|isn'?t able|denied|no permission|not allowed|lacks?|doesn'?t have|does not have|missing the)\b/,
@@ -84,9 +132,19 @@ function diagnosticIntent(question) {
 }
 
 function mutationIntent(question) {
-  const q = String(question ?? '').toLowerCase();
+  const q = String(question ?? '').toLowerCase().trim();
+  if (!q) return false;
+
+  // A request wins outright: "can you please delete these leads" is a request
+  // whatever else is true of it.
+  if (requestShape(q)) return true;
+
+  // Everything below is a read. Each of these has been a real false positive.
+  if (INTERROGATIVE.test(q)) return false;
+  if (aboutCapability(q)) return false;
   if (diagnosticIntent(q)) return false;
-  return MUTATION.some((re) => re.test(q));
+
+  return false;
 }
 
 /* ------------------------------------------------------- 2. off topic */
@@ -410,7 +468,7 @@ const RULES = [
     // question. A named permission plus a plural of people is enough.
     when: (q, ctx) =>
       Boolean(ctx.permission) && !ctx.person && CAPABILITY.test(q) &&
-      /\b(users|people|agents|employees|staff|everyone|anybody|anyone|who|whom)\b/.test(q),
+      PEOPLE_OR_PRONOUN.test(q),
     build: (q, ctx) =>
       'SELECT Users.USER_ID, Users.FULL_NAME, Users.EMAIL, Profiles.PROFILE_NAME, ' +
       'ProfilePermissions.GRANTED ' +
@@ -668,6 +726,23 @@ const CAPABILITY =
   /\b(can|cannot|can'?t|could|may|able|unable|allowed|permitted|permission|permissions|privilege|privileges|entitled|rights|authorised|authorized)\b/;
 
 /**
+ * Words that mean people - including the bare plural pronouns.
+ *
+ * "How many of THEM have lead create permission" is a follow-up, and them is
+ * the only thing naming the subject. A pronoun is ambiguous on its own - after
+ * a question about leads it could mean leads - but this pattern is only ever
+ * consulted together with a resolved permission and capability language, and
+ * permissions attach to users and profiles, never to records. That pairing is
+ * what makes admitting the pronoun safe.
+ *
+ * The answer states its own scope for the same reason: it reports "15 of 25
+ * users", not "15 of them", so an engineer can see it was computed over the
+ * whole account rather than over whatever the previous question returned.
+ */
+const PEOPLE_OR_PRONOUN =
+  /\b(user|users|people|person|persons|agent|agents|employee|employees|staff|profile|profiles|role|roles|everyone|anyone|anybody|who|whom|them|they|these|those)\b/;
+
+/**
  * Is this about who may do something, rather than about the things themselves?
  *
  * "How many users can create leads" names leads, and every keyword a lead-
@@ -687,8 +762,7 @@ function accessQuestion(q, context) {
       !/\b(permission|permissions|privilege|privileges|access|rights)\b/.test(q)) {
     return false;
   }
-  return /\b(user|users|people|person|agent|agents|employee|employees|staff|profile|profiles|role|roles|everyone|anyone|anybody|who|whom)\b/
-    .test(q);
+  return PEOPLE_OR_PRONOUN.test(q);
 }
 
 function translate(question, ctx = {}) {
