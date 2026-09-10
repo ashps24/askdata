@@ -375,6 +375,7 @@ const RULES = [
   /* -- the permission escalation -------------------------------------- */
   {
     id: 'person-permission-specific',
+    about: 'access',
     when: (q, ctx) => Boolean(ctx.person) && Boolean(ctx.permission),
     build: (q, ctx) =>
       'SELECT Users.FULL_NAME, Profiles.PROFILE_NAME, Profiles.PRODUCT, ' +
@@ -384,6 +385,7 @@ const RULES = [
   },
   {
     id: 'person-permissions-all',
+    about: 'access',
     when: (q, ctx) => Boolean(ctx.person) && any('permission', 'privilege', 'access', 'can they', 'what can', 'allowed')(q),
     build: (q, ctx) =>
       'SELECT Profiles.PROFILE_NAME, Profiles.PRODUCT, Permissions.PERMISSION_KEY, ' +
@@ -392,7 +394,33 @@ const RULES = [
       'ORDER BY Permissions.PERMISSION_KEY',
   },
   {
+    // Every user, with whether they hold one named permission - in ONE query.
+    //
+    // This is the shape support actually needs: not "can Priya create leads"
+    // but "who can, and who can't". It is the full four-join spine with the
+    // permission pinned and the user left open, so a single read returns both
+    // sides of the answer. Every profile carries a row per permission with
+    // GRANTED true or false, so nobody is missing from the result.
+    id: 'users-by-permission',
+    about: 'access',
+    // No wh-word requirement. "users has permission to create leads" is the
+    // same question as "which users can create leads", and demanding "which"
+    // meant a typo in that one word - which the corrector rightly refuses to
+    // guess at, since "wich" is equally close to "with" - lost the whole
+    // question. A named permission plus a plural of people is enough.
+    when: (q, ctx) =>
+      Boolean(ctx.permission) && !ctx.person && CAPABILITY.test(q) &&
+      /\b(users|people|agents|employees|staff|everyone|anybody|anyone|who|whom)\b/.test(q),
+    build: (q, ctx) =>
+      'SELECT Users.USER_ID, Users.FULL_NAME, Users.EMAIL, Profiles.PROFILE_NAME, ' +
+      'ProfilePermissions.GRANTED ' +
+      PERMISSION_CHAIN +
+      `WHERE Permissions.PERMISSION_KEY = ${lit(ctx.permission.key)} ` +
+      'ORDER BY Users.FULL_NAME',
+  },
+  {
     id: 'profiles-with-action',
+    about: 'access',
     when: (q, ctx) => any('profile', 'role')(q) && Boolean(ctx.permission),
     build: (q, ctx) =>
       'SELECT Profiles.PROFILE_NAME, Profiles.PRODUCT, Permissions.MODULE, ' +
@@ -405,6 +433,7 @@ const RULES = [
   },
   {
     id: 'profiles-that-can-delete',
+    about: 'access',
     when: (q) => all(any('profile', 'role'), any('delete', 'remove'))(q),
     build: () =>
       'SELECT Profiles.PROFILE_NAME, Profiles.PRODUCT, Permissions.MODULE, Permissions.PERMISSION_KEY, ' +
@@ -418,6 +447,7 @@ const RULES = [
   /* -- the Desk escalation -------------------------------------------- */
   {
     id: 'person-departments',
+    about: 'access',
     when: (q, ctx) => Boolean(ctx.person) && any('department', 'dept', 'team', 'queue')(q),
     build: (q, ctx) =>
       'SELECT DESK_Departments.DEPARTMENT_NAME, DESK_DepartmentMembers.ROLE_IN_DEPT, ' +
@@ -429,6 +459,7 @@ const RULES = [
   },
   {
     id: 'list-departments',
+    about: 'access',
     // "how many open tickets per department" mentions departments but is a
     // ticket question; it belongs to tickets-by-department.
     when: (q) =>
@@ -470,34 +501,11 @@ const RULES = [
 
   /* -- users coverage --------------------------------------------------- */
   {
-    // Every user, with whether they hold one named permission - in ONE query.
-    //
-    // This is the shape support actually needs: not "can Priya create leads"
-    // but "who can, and who can't". It is the full four-join spine with the
-    // permission pinned and the user left open, so a single read returns both
-    // sides of the answer. Every profile carries a row per permission with
-    // GRANTED true or false, so nobody is missing from the result.
-    id: 'users-by-permission',
-    // No wh-word requirement. "users has permission to create leads" is the
-    // same question as "which users can create leads", and demanding "which"
-    // meant a typo in that one word - which the corrector rightly refuses to
-    // guess at, since "wich" is equally close to "with" - lost the whole
-    // question. A named permission plus a plural of people is enough.
-    when: (q, ctx) =>
-      Boolean(ctx.permission) && !ctx.person &&
-      /\b(users|people|agents|employees|staff|everyone|anybody|anyone)\b/.test(q),
-    build: (q, ctx) =>
-      'SELECT Users.USER_ID, Users.FULL_NAME, Users.EMAIL, Profiles.PROFILE_NAME, ' +
-      'ProfilePermissions.GRANTED ' +
-      PERMISSION_CHAIN +
-      `WHERE Permissions.PERMISSION_KEY = ${lit(ctx.permission.key)} ` +
-      'ORDER BY Users.FULL_NAME',
-  },
-  {
     // The inverse of dormant-users. "Active" has to be matched as a whole word
     // that is not the tail of "inactive", or every dormancy question would be
     // answered with its own opposite.
     id: 'active-users',
+    about: 'access',
     when: (q) =>
       /(?<!in)\bactive\b|\blogged in\b|\bsigned in\b|\bhave logged\b/.test(q) &&
       !/\binactive\b|\bdormant\b|\bhasn'?t\b|\bhaven'?t\b|\bhas not\b|\bhave not\b|\bnever\b|\bnot logged\b/.test(q) &&
@@ -509,6 +517,7 @@ const RULES = [
   },
   {
     id: 'dormant-users',
+    about: 'access',
     // Written loosely on purpose: engineers type "hasn't", "hasnt" and "has
     // not" interchangeably, and an apostrophe should not decide whether a
     // question is understood.
@@ -527,6 +536,7 @@ const RULES = [
   },
   {
     id: 'count-users',
+    about: 'access',
     when: (q) => all(any('user', 'people', 'employee', 'staff', 'seat'), any('how many', 'count', 'number of', 'total'))(q),
     build: () => "SELECT COUNT(ROWID) FROM Users WHERE Users.STATUS = 'active'",
   },
@@ -647,6 +657,40 @@ const RULES = [
  *
  * Returns { zcql, ruleId } or null.
  */
+/**
+ * Capability language: what separates "who CAN export contacts" from "who
+ * exported contacts". Both name people and an action, and both produce a
+ * permission target - "changed the lead source" reads as crm.leads.edit - but
+ * only the first is a permission question. The second is history and must
+ * still reach the history rules.
+ */
+const CAPABILITY =
+  /\b(can|cannot|can'?t|could|may|able|unable|allowed|permitted|permission|permissions|privilege|privileges|entitled|rights|authorised|authorized)\b/;
+
+/**
+ * Is this about who may do something, rather than about the things themselves?
+ *
+ * "How many users can create leads" names leads, and every keyword a lead-
+ * counting rule looks for is present - "how many", "leads". But leads are the
+ * OBJECT of the permission here, not the thing being counted, and answering
+ * "40 leads" is not a near miss; it is a confident answer to a question nobody
+ * asked, which is the worst thing this tool can do.
+ *
+ * Rule order alone fixed the one case and would break again the next time a
+ * records rule was added above an access rule. So the question is classified
+ * first, and a permission question is only ever offered the access rules.
+ */
+function accessQuestion(q, context) {
+  if (!CAPABILITY.test(q)) return false;
+
+  if (!context.permission &&
+      !/\b(permission|permissions|privilege|privileges|access|rights)\b/.test(q)) {
+    return false;
+  }
+  return /\b(user|users|people|person|agent|agents|employee|employees|staff|profile|profiles|role|roles|everyone|anyone|anybody|who|whom)\b/
+    .test(q);
+}
+
 function translate(question, ctx = {}) {
   const q = String(question ?? '').toLowerCase().trim();
   if (!q) return null;
@@ -658,7 +702,13 @@ function translate(question, ctx = {}) {
     days: ctx.days ?? daysIn(question),
   };
 
-  for (const rule of RULES) {
+  // Access questions see only the access rules. Everything else sees all of
+  // them, so nothing else changes behaviour.
+  const candidates = accessQuestion(q, context)
+    ? RULES.filter((r) => r.about === 'access')
+    : RULES;
+
+  for (const rule of candidates) {
     let hit = false;
     try { hit = rule.when(q, context); } catch { hit = false; }
     if (hit) return { zcql: rule.build(q, context), ruleId: rule.id };
@@ -695,6 +745,7 @@ function suggestionsFor(loaded) {
 
 module.exports = {
   translate, RULES, mutationIntent, diagnosticIntent, offTopic, vocabularyFor, suggestionsFor,
+  accessQuestion,
   namedEntity,
   vaguePersonReference,
   leadIdIn, daysIn, daysAgo, expectedDepartment, permissionTarget,
