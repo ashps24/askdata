@@ -22,13 +22,38 @@ const rules = require('./rules');
 
 /** A best-effort query for a debug engineer to run, with scoping spelled out. */
 function draftQuery({ question, orgId, zgid, resolved = {}, loaded }) {
-  const ruled = rules.translate(question, resolved);
+  const ruled = rules.translate(question, { ...resolved, loaded });
+  const service = loaded?.serviceKey && loaded.serviceKey !== 'all' ? loaded.serviceKey : null;
+
   if (ruled) {
-    // Show it scoped, because an unscoped query is not runnable against a
-    // shared store and the debug engineer would have to add it themselves.
+    // A draft is handed to a debug engineer to RUN. The guard never sees it,
+    // so the session boundary has to be applied here or a Desk escalation
+    // walks out carrying a runnable CRM_Leads query. Two checks, same as the
+    // guard's: every table must be one this session loaded, and no literal may
+    // name another service's product.
+    const tables = [...String(ruled.zcql).matchAll(/\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)/gi)].map((m) => m[1]);
+    const foreignTable = tables.find((t) => !loaded?.tableNames?.includes(t));
+    const foreignKey = service
+      ? [...String(ruled.zcql).matchAll(/\bPERMISSION_KEY\s*=\s*'([a-z]+)\./gi)].map((m) => m[1]).find((p) => p !== service)
+      : null;
+
+    if (!foreignTable && !foreignKey) {
+      // Show it scoped, because an unscoped query is not runnable against a
+      // shared store and the debug engineer would have to add it themselves.
+      return {
+        zcql: withScope(ruled.zcql, orgId, loaded),
+        basis: `matched the "${ruled.ruleId}" pattern`,
+      };
+    }
+
+    const other = foreignKey ?? (foreignTable ? foreignTable.split('_')[0].toLowerCase() : 'another service');
     return {
-      zcql: withScope(ruled.zcql, orgId, loaded),
-      basis: `matched the "${ruled.ruleId}" pattern`,
+      zcql:
+        `-- Not drafted: this question is about ${other}, and this session is scoped to ${service ?? 'the loaded services'}.\n` +
+        `-- Question: ${String(question).replace(/\n/g, ' ')}\n` +
+        `-- Org: ${orgId} (zgid ${zgid})\n` +
+        `-- Open a ${other} session for this customer and escalate from there.`,
+      basis: `out of scope for this session (${other})`,
     };
   }
 
@@ -90,6 +115,7 @@ function build({ question, reason, orgId, zgid, ticketId, engineerEmail, resolve
     `Customer   : ${orgName ?? orgId} (ZGID ${zgid})`,
     `Ticket     : ${ticketId}`,
     `Raised by  : ${engineerEmail}`,
+    ...(loaded?.serviceKey && loaded.serviceKey !== 'all' ? [`Service    : ${loaded.serviceLabel ?? loaded.serviceKey} (this session only)`] : []),
     `Question   : ${String(question).replace(/\n/g, ' ')}`,
     `Why not    : ${reason}`,
     `Draft basis: ${basis}`,

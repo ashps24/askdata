@@ -492,6 +492,72 @@ app.post('/ask', async (req, res) => {
       }, { outcome: 'clarify', verdict: 'off-topic question', zcql: '', rowCount: 0 });
     }
 
+    /* -- 3a. the SERVICE boundary on permission questions - before any name is resolved */
+    //
+    // Permissions live in shared platform tables, so the guard's table
+    // allow-list cannot catch a question about another service's permissions.
+    // Two cases, both before any query is written:
+    //
+    //   the question names a module from ANOTHER service ("who can delete
+    //   leads" in a Desk session) - refuse, and say which session to open;
+    //
+    //   it names an action but no module ("who can delete records") - ask
+    //   which, offering only THIS service's modules. Answering across every
+    //   module of every product is how a Desk session came back with CRM rows.
+    {
+      const service = loaded.serviceKey && loaded.serviceKey !== 'all' ? loaded.serviceKey : null;
+      const target = rules.permissionTarget(asked, service);
+      const label = { crm: 'Zoho CRM', campaigns: 'Zoho Campaigns', desk: 'Zoho Desk' };
+      const isAccess = rules.accessQuestion(asked.toLowerCase(), { permission: target });
+
+      // Unconditional. "Does Priya have lead create" has no capability word,
+      // so it is not an access question by the classifier's lights - but it
+      // names leads, leads are CRM, and this is a Desk session. Gating the
+      // refusal on phrasing let it through to a rule that pinned PRODUCT to
+      // zero rows and told the customer "no such permission is configured".
+      if (target && service && target.product !== service) {
+        const owns = (loaded.orgProducts ?? []).includes(target.product);
+        return finish({
+          body: {
+            mode: 'refused',
+            reason: owns
+              ? `You are connected to this customer's ${label[service]} data, and ${target.module.toLowerCase()} ` +
+                `belong to ${label[target.product]}. Reconnect with their ${target.product} org id to ask about ` +
+                `${target.module.toLowerCase()} permissions.`
+              : `This customer isn't subscribed to ${label[target.product]}, so there are no ` +
+                `${target.module.toLowerCase()} permissions to check. Their products are: ` +
+                `${(loaded.orgProducts ?? []).join(', ')}.`,
+            suggestions: rules.modulesFor(service, loaded.orgProducts)
+              .map((m) => asked.replace(new RegExp(`\\b${target.module.toLowerCase()}\\b|\\b${target.module.toLowerCase().replace(/s$/, '')}\\b`, 'i'), m.plural)),
+            escalation_draft: null,
+          },
+        }, {
+          outcome: 'refused', zcql: '', rowCount: 0,
+          verdict: `permission target ${target.key} is outside the session service (${service})`,
+        });
+      }
+
+      const action = rules.permissionAction(asked);
+      if (isAccess && action && !target) {
+        const modules = rules.modulesFor(service, loaded.orgProducts);
+        const verb = /\b(delete|remove|create|add|edit|update|export|view|share|approve)\b/i.exec(asked)?.[1] ?? action;
+        return finish({
+          body: {
+            mode: 'clarify',
+            question:
+              `${verb.charAt(0).toUpperCase() + verb.slice(1).toLowerCase()} what? ` +
+              `${service ? `In ${label[service]} that could be ` : 'That could be '}` +
+              `${modules.map((m) => m.plural).join(', ')}.`,
+            suggestions: modules.map((m) => asked.replace(/\b(records?|data|things?|items?|entries|stuff|anything)\b/i, m.plural))
+              .map((q, i) => (q === asked ? `${asked} - ${modules[i].plural}` : q)),
+          },
+        }, {
+          outcome: 'clarify', zcql: '', rowCount: 0,
+          verdict: `permission action "${action}" named no module; offered ${modules.map((m) => m.module).join(', ')}`,
+        });
+      }
+    }
+
     /* -- 3. who or what does it name? ---------------------------------- */
     let person = null;
     try {
@@ -521,71 +587,11 @@ app.post('/ask', async (req, res) => {
       console.warn(`name resolution skipped: ${err.message}`);
     }
 
-    /* -- 3b. the SERVICE boundary on permission questions ---------------- */
-    //
-    // Permissions live in shared platform tables, so the guard's table
-    // allow-list cannot catch a question about another service's permissions.
-    // Two cases, both before any query is written:
-    //
-    //   the question names a module from ANOTHER service ("who can delete
-    //   leads" in a Desk session) - refuse, and say which session to open;
-    //
-    //   it names an action but no module ("who can delete records") - ask
-    //   which, offering only THIS service's modules. Answering across every
-    //   module of every product is how a Desk session came back with CRM rows.
-    if (rules.accessQuestion(asked.toLowerCase(), { permission: rules.permissionTarget(asked) })) {
-      const target = rules.permissionTarget(asked);
-      const service = loaded.serviceKey && loaded.serviceKey !== 'all' ? loaded.serviceKey : null;
-      const label = { crm: 'Zoho CRM', campaigns: 'Zoho Campaigns', desk: 'Zoho Desk' };
-
-      if (target && service && target.product !== service) {
-        const owns = (loaded.orgProducts ?? []).includes(target.product);
-        return finish({
-          body: {
-            mode: 'refused',
-            reason: owns
-              ? `You are connected to this customer's ${label[service]} data, and ${target.module.toLowerCase()} ` +
-                `belong to ${label[target.product]}. Reconnect with their ${target.product} org id to ask about ` +
-                `${target.module.toLowerCase()} permissions.`
-              : `This customer isn't subscribed to ${label[target.product]}, so there are no ` +
-                `${target.module.toLowerCase()} permissions to check. Their products are: ` +
-                `${(loaded.orgProducts ?? []).join(', ')}.`,
-            suggestions: rules.modulesFor(service, loaded.orgProducts)
-              .map((m) => asked.replace(new RegExp(`\\b${target.module.toLowerCase()}\\b|\\b${target.module.toLowerCase().replace(/s$/, '')}\\b`, 'i'), m.plural)),
-            escalation_draft: null,
-          },
-        }, {
-          outcome: 'refused', zcql: '', rowCount: 0,
-          verdict: `permission target ${target.key} is outside the session service (${service})`,
-        });
-      }
-
-      const action = rules.permissionAction(asked);
-      if (action && !target) {
-        const modules = rules.modulesFor(service, loaded.orgProducts);
-        const verb = /\b(delete|remove|create|add|edit|update|export|view|share|approve)\b/i.exec(asked)?.[1] ?? action;
-        return finish({
-          body: {
-            mode: 'clarify',
-            question:
-              `${verb.charAt(0).toUpperCase() + verb.slice(1).toLowerCase()} what? ` +
-              `${service ? `In ${label[service]} that could be ` : 'That could be '}` +
-              `${modules.map((m) => m.plural).join(', ')}.`,
-            suggestions: modules.map((m) => asked.replace(/\b(records?|data|things?|items?|entries|stuff|anything)\b/i, m.plural))
-              .map((q, i) => (q === asked ? `${asked} - ${modules[i].plural}` : q)),
-          },
-        }, {
-          outcome: 'clarify', zcql: '', rowCount: 0,
-          verdict: `permission action "${action}" named no module; offered ${modules.map((m) => m.module).join(', ')}`,
-        });
-      }
-    }
-
     // A question ABOUT a person that never names one. Asking is the only honest
     // move: guessing would breach rule 4, and refusing sends the engineer back
     // to the debug queue over a missing word.
     if (!person && rules.vaguePersonReference(asked)) {
-      const target = rules.permissionTarget(asked);
+      const target = rules.permissionTarget(asked, loaded.serviceKey ?? null);
       return finish({
         body: {
           mode: 'clarify',
@@ -609,7 +615,8 @@ app.post('/ask', async (req, res) => {
 
     let account = null;
     let accounts = [];
-    if (/\b(?:at|for|of|in)\s+[A-Z]/.test(asked) || /contact|account|company/i.test(asked)) {
+    if (loaded.tableNames.includes('CRM_Accounts') &&
+        (/\b(?:at|for|of|in)\s+[A-Z]/.test(asked) || /contact|account|company/i.test(asked))) {
       try {
         accounts = replica.flattenRows(await catalystApp.zcql().executeZCQLQuery(
           `SELECT ACCOUNT_ID, ACCOUNT_NAME FROM CRM_Accounts WHERE ORG_ID = '${store.q(org.ORG_ID)}' LIMIT 0, 300`
@@ -654,7 +661,12 @@ app.post('/ask', async (req, res) => {
       }
     }
 
-    const resolved = { person, account };
+    // `loaded` travels with the resolution context because the rules need it:
+    // permissionTarget() prefers THIS session's service when a question names
+    // modules from more than one ("in the account can delete tickets" names
+    // both an account and a ticket), and without it the first match won and a
+    // Desk question was answered with a CRM permission key.
+    const resolved = { person, account, loaded };
 
     /* -- 4. translate: model first, rules behind it -------------------- */
     let proposed = null;
@@ -714,7 +726,11 @@ app.post('/ask', async (req, res) => {
       compiled = guard.compile(proposed, org.ORG_ID, loaded);
     } catch (err) {
       if (err.name !== 'Refused') throw err;
-      const draft = escalate.build({
+      // "Reconnect on the other service" is a redirect, not a dead end. Attaching
+      // a draft to it handed a debug engineer the very query the refusal had
+      // just declined to run.
+      const redirect = /outside the session service|inside a \w+ session/.test(err.verdict ?? '');
+      const draft = redirect ? null : escalate.build({
         question, reason: err.reason,
         orgId: org.ORG_ID, zgid: claims.zgid, ticketId: claims.ticketId,
         engineerEmail: claims.engineerEmail, resolved, loaded, orgName: org.ORG_NAME,
@@ -763,6 +779,7 @@ app.post('/ask', async (req, res) => {
         dc: result.dc,
         tables: compiled.tables,
         org_scope: compiled.injected,
+          service_scope: compiled.serviceScoped ?? null,
         person: person ? { user_id: person.USER_ID, full_name: mask.maskValue(person.FULL_NAME, 'name') } : null,
         model_note: modelNote,
         shaper: described.shaper,
@@ -1069,6 +1086,43 @@ app.post('/explore/summary', async (req, res) => {
     }
     console.error('explore summary failed:', err);
     res.status(500).json({ error: 'Could not summarise the tables.' });
+  }
+});
+
+/**
+ * The audit trail for the customer this grant is open on.
+ *
+ * The client used the unscoped GET and showed every customer's questions in
+ * the Audit tab under "questions you ask". A connected engineer sees their
+ * customer's trail; the unscoped GET stays for a security review.
+ */
+app.post('/audit', async (req, res) => {
+  const catalystApp = catalyst.initialize(req);
+  try {
+    const claims = grant.verify(req.body?.grant_token);
+    const rows = await store.recentLog(catalystApp, claims.orgId, Number(req.body?.limit) || 100);
+    let pending = [];
+    try {
+      pending = (await spool.list(catalystApp, 200))
+        .map(({ row }) => ({ ...row, PENDING: true }))
+        .filter((r) => r.ORG_ID === claims.orgId);
+    } catch { /* table rows still worth returning */ }
+    // The limit applies to what comes BACK, not to the table read alone - the
+    // spool had grown to 199 held entries and a request for 40 returned 203.
+    const limit = Math.min(Math.max(Number(req.body?.limit) || 100, 1), 300);
+    const log = [...pending.reverse(), ...rows].slice(0, limit);
+    res.json({
+      count: log.length,
+      in_table: rows.length,
+      pending_in_spool: pending.length,
+      shown: log.length,
+      by_outcome: log.reduce((acc, r) => { acc[r.OUTCOME] = (acc[r.OUTCOME] ?? 0) + 1; return acc; }, {}),
+      log,
+    });
+  } catch (err) {
+    if (err.name === 'GrantError') return res.status(err.status ?? 401).json({ error: err.message, code: err.code });
+    console.error('POST /audit failed:', err);
+    res.status(500).json({ error: 'Could not read the audit log.' });
   }
 });
 

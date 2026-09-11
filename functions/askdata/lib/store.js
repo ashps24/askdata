@@ -226,7 +226,7 @@ function requireAudit() {
 async function recentLog(catalystApp, orgId, count = 100) {
   const limit = Math.min(Math.max(Number(count) || 100, 1), 300);
   const result = await catalystApp.zcql().executeZCQLQuery(
-    `SELECT LOG_ID, ENGINEER_EMAIL, TICKET_ID, ZGID, QUESTION, GENERATED_ZCQL, GUARD_VERDICT, ` +
+    `SELECT ORG_ID, LOG_ID, ENGINEER_EMAIL, TICKET_ID, ZGID, QUESTION, GENERATED_ZCQL, GUARD_VERDICT, ` +
     `ROW_COUNT, LATENCY_MS, OUTCOME, PII_REVEALED, OCCURRED_AT FROM SupportQueryLog ` +
     `WHERE ORG_ID = '${q(orgId)}' ORDER BY OCCURRED_AT DESC LIMIT 0, ${limit}`
   );

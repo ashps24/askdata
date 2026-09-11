@@ -121,7 +121,7 @@ module.exports = {
       columns: [
         { name: 'ORG_ID', type: 'varchar', max_length: 64, mandatory: true, indexed: true },
         { name: 'PROFILE_ID', type: 'varchar', max_length: 32, indexed: true },
-        { name: 'PRODUCT', type: 'varchar', max_length: 24, indexed: true },
+        { name: 'PRODUCT', type: 'varchar', values: ['crm', 'campaigns', 'desk'], max_length: 24, indexed: true },
         { name: 'PROFILE_NAME', type: 'varchar', max_length: 80, indexed: true },
         { name: 'IS_CUSTOM', type: 'boolean', default_value: 'false' },
       ],
@@ -137,7 +137,7 @@ module.exports = {
       columns: [
         { name: 'ORG_ID', type: 'varchar', max_length: 64, mandatory: true, indexed: true },
         { name: 'USER_ID', type: 'varchar', max_length: 32, indexed: true },
-        { name: 'PRODUCT', type: 'varchar', max_length: 24, indexed: true },
+        { name: 'PRODUCT', type: 'varchar', values: ['crm', 'campaigns', 'desk'], max_length: 24, indexed: true },
         { name: 'PROFILE_ID', type: 'varchar', max_length: 32, indexed: true },
         { name: 'ASSIGNED_ON', type: 'date' },
       ],
@@ -155,7 +155,7 @@ module.exports = {
       columns: [
         { name: 'ORG_ID', type: 'varchar', max_length: 64, mandatory: true, indexed: true },
         { name: 'PERMISSION_ID', type: 'varchar', max_length: 32, indexed: true },
-        { name: 'PRODUCT', type: 'varchar', max_length: 24, indexed: true },
+        { name: 'PRODUCT', type: 'varchar', values: ['crm', 'campaigns', 'desk'], max_length: 24, indexed: true },
         { name: 'MODULE', type: 'varchar', max_length: 60, indexed: true },
         {
           name: 'ACTION', type: 'varchar', max_length: 20, indexed: true,
@@ -191,7 +191,7 @@ module.exports = {
       columns: [
         { name: 'ORG_ID', type: 'varchar', max_length: 64, mandatory: true, indexed: true },
         { name: 'EVENT_ID', type: 'varchar', max_length: 40, indexed: true },
-        { name: 'PRODUCT', type: 'varchar', max_length: 24, indexed: true },
+        { name: 'PRODUCT', type: 'varchar', values: ['crm', 'campaigns', 'desk'], max_length: 24, indexed: true },
         { name: 'USER_ID', type: 'varchar', max_length: 32, indexed: true },
         {
           name: 'EVENT_TYPE', type: 'varchar', max_length: 30, indexed: true,

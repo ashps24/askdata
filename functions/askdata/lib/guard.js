@@ -389,6 +389,13 @@ function compile(proposed, orgId, loaded) {
     userWhere = masked.slice(whereStart + wheres[0].length, whereEnd).trim();
   }
 
+  // The service this grant was opened on, or null for an all-services session.
+  // Used twice below: to refuse a query that names another service, and to pin
+  // PRODUCT on the shared platform tables.
+  const service = loaded.serviceKey && loaded.serviceKey !== 'all'
+    ? String(loaded.serviceKey).replace(/'/g, '')
+    : null;
+
   let strippedOrgPredicate = false;
   if (userWhere) {
     const kept = [];
@@ -429,6 +436,52 @@ function compile(proposed, orgId, loaded) {
           verdict: `unfiltered PII selection from ${table}`,
           security: true,
           suggestions: ['ask for a count, e.g. "how many contacts are there"'],
+        });
+      }
+    }
+  }
+
+  /* --- the service boundary on the shared platform tables ---------------- */
+  if (service) {
+    // (a) A literal that names ANOTHER service. Pinning PRODUCT would AND it
+    // into an empty result and the answer would read "none" - a confident
+    // falsehood. "List the CRM profiles" in a Desk session is a redirect, not
+    // a zero.
+    const named = [
+      ...[...userWhere.matchAll(/\bPRODUCT\s*=\s*'([a-z]+)'/gi)].map((m) => m[1].toLowerCase()),
+      ...[...userWhere.matchAll(/\bPERMISSION_KEY\s*=\s*'([a-z]+)\./gi)].map((m) => m[1].toLowerCase()),
+    ].find((product) => product !== service);
+    if (named) {
+      const owns = (loaded.orgProducts ?? []).includes(named);
+      throw new Refused({
+        reason: owns
+          ? `You are connected to this customer's ${loaded.serviceLabel ?? service} data, and that ` +
+            `question is about ${PACK_LABELS[named] ?? named}. Reconnect with their ${named} org id to ask it.`
+          : `This customer isn't subscribed to ${PACK_LABELS[named] ?? named}, so there is nothing to check there. ` +
+            `Their products are: ${(loaded.orgProducts ?? []).join(', ') || 'none'}.`,
+        verdict: `query names product ${named} inside a ${service} session`,
+        suggestions: loaded.tables.slice(0, 6).map((t) => `ask about ${t.label}`),
+      });
+    }
+
+    // (b) A table that belongs to a product only THROUGH its parent.
+    // ProfilePermissions has no PRODUCT column - it is a grant matrix whose
+    // product is its profile's - so the pin below cannot reach it. Read on its
+    // own it would count every product's grants. Require the parent that
+    // carries PRODUCT to be in the query, where it will be pinned.
+    for (const [, { table }] of qualifiers) {
+      const def = loaded.byTable.get(table);
+      if (!def || def.columnNames.includes('PRODUCT')) continue;
+      const via = (def.refs ?? []).find((r) => loaded.byTable.get(r.parent)?.columnNames.includes('PRODUCT'));
+      if (!via) continue;                      // Users and the like: org-level identity, not product-owned
+      const parentPresent = [...qualifiers.values()].some((v) => v.table === via.parent);
+      if (!parentPresent) {
+        throw new Refused({
+          reason:
+            `To keep that to ${loaded.serviceLabel ?? service}, ask it in terms of the profiles or ` +
+            `permissions it belongs to - for example "which profiles have that permission".`,
+          verdict: `${table} is product-scoped only via ${via.parent}, which is not in the query`,
+          suggestions: ['which profiles can delete tickets', 'which users can create tickets'],
         });
       }
     }
@@ -493,9 +546,6 @@ function compile(proposed, orgId, loaded) {
   // PRODUCT-bearing table in the query is pinned to it, exactly as ORG_ID is.
   // Injected, never trusted: a model-written PRODUCT predicate is AND-ed with
   // ours inside its own parentheses and can only narrow.
-  const service = loaded.serviceKey && loaded.serviceKey !== 'all'
-    ? String(loaded.serviceKey).replace(/'/g, '')
-    : null;
   const serviceConjuncts = service
     ? [...qualifiers.entries()]
       .filter(([, { table }]) => loaded.byTable.get(table)?.columnNames?.includes('PRODUCT'))

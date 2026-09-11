@@ -107,7 +107,8 @@ function systemPrompt(loaded) {
     '- intent "refuse" when it asks to change data, or asks for something outside this schema.',
     '- confidence is your own 0-1 estimate that the query answers the question asked.',
     '',
-    `The customer's products: ${loaded.productKeys.join(', ') || 'none'}.`,
+    `The customer's products: ${(loaded.orgProducts ?? loaded.productKeys).join(', ') || 'none'}. ` +
+    `Loaded in this session: ${loaded.productKeys.join(', ') || 'none'}.`,
     ...(loaded.serviceKey && loaded.serviceKey !== 'all'
       ? [
         `THIS SESSION IS SCOPED TO ONE SERVICE: ${loaded.serviceKey}. Profiles, UserProfiles, ` +
@@ -176,7 +177,15 @@ async function translate(catalystApp, { question, loaded, history = [], person =
         `and USER_ID '${person.USER_ID}'. Filter on one of those exact values.`
       : '';
 
+    // Prior turns are caller-supplied. Replay only those whose query stayed
+    // inside this session's tables - a turn from a CRM session must not teach
+    // a Desk session's model what CRM_Leads looks like.
+    const inScope = (h) => {
+      const tables = [...String(h?.zcql ?? '').matchAll(/\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)/gi)].map((m) => m[1]);
+      return tables.every((t) => loaded.tableNames.includes(t));
+    };
     const turns = history
+      .filter(inScope)
       .slice(-3)
       .flatMap((h) => [
         { role: 'user', content: String(h.question ?? '').slice(0, 400) },

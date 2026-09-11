@@ -114,9 +114,16 @@ const SHAPERS = [
     id: 'users-by-permission',
     match: ({ ruleId }) => ruleId === 'users-by-permission',
     build: ({ rows, question }) => {
+      // Both halves of the sentence come from the permission the query ran on,
+      // never from the question's wording - a question naming two modules
+      // ("in the account ... delete tickets") would otherwise be answered in
+      // the wrong noun.
       const key = rows[0]?.PERMISSION_KEY ?? null;
-      const action = /\b(create|delete|edit|update|export|view|share|approve)\b/i.exec(question)?.[1] ?? 'use';
-      const what = key ? key.split('.')[1] : (/\b(lead|contact|account|deal|ticket|segment|list|campaign)s?\b/i.exec(question)?.[1] ?? 'record') + 's';
+      const [, keyModule, keyAction] = key ? key.split('.') : [];
+      const action = keyAction
+        ?? /\b(create|delete|edit|update|export|view|share|approve)\b/i.exec(question)?.[1] ?? 'use';
+      const what = keyModule
+        ?? `${/\b(lead|contact|account|deal|ticket|segment|list|campaign)s?\b/i.exec(question)?.[1] ?? 'record'}s`;
 
       const yes = rows.filter((r) => r.GRANTED === true || r.GRANTED === 'true' || r.GRANTED === 'True');
       const no = rows.filter((r) => !(r.GRANTED === true || r.GRANTED === 'true' || r.GRANTED === 'True'));

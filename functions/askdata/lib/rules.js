@@ -282,11 +282,25 @@ const ACTIONS = [
   ['view', 'view'], ['see', 'view'], ['read', 'view'], ['access', 'view'], ['open', 'view'],
 ];
 
-function permissionTarget(question) {
+/**
+ * The permission a question is about, if it names one.
+ *
+ * Whole words, not substrings: "in the account can delete tickets" contains
+ * "account", and substring matching read that as crm.accounts.delete and
+ * refused a perfectly good Desk question as CRM's. And when a question names
+ * modules from more than one service, the session's own service wins - the
+ * engineer connected to Desk is asking about Desk.
+ */
+function permissionTarget(question, serviceKey = null) {
   const q = String(question ?? '').toLowerCase();
-  const mod = MODULES.find(([w]) => q.includes(w));
-  const act = ACTIONS.find(([w]) => q.includes(w));
-  if (!mod || !act) return null;
+  const act = ACTIONS.find(([w]) => new RegExp(`\\b${w}(?:s|ed|ing)?\\b`).test(q));
+  if (!act) return null;
+
+  const hits = MODULES.filter(([w]) => new RegExp(`\\b${w}s?\\b`).test(q));
+  if (!hits.length) return null;
+
+  const scoped = serviceKey && serviceKey !== 'all' ? String(serviceKey) : null;
+  const mod = (scoped && hits.find(([, product]) => product === scoped)) || hits[0];
   return { product: mod[1], module: mod[2], action: act[1], key: `${mod[1]}.${mod[2].toLowerCase()}.${act[1]}` };
 }
 
@@ -362,6 +376,10 @@ const RECORD_WORDS = /\b(contact|account|company|customer|deal|lead|opportunit)/
 
 function namedEntity(question, loaded = null) {
   const text = String(question ?? '');
+  // The words below are CRM's, and the lookup they lead to is CRM_Accounts. In
+  // a session that has not loaded CRM there is nothing to resolve against and
+  // no account name that may be shown.
+  if (loaded && !loaded.tableNames?.includes('CRM_Accounts')) return null;
   if (!RECORD_WORDS.test(text)) return null;
 
   const phrase = LOCATOR.exec(text)?.[1]?.replace(/"/g, '').trim();
@@ -494,8 +512,12 @@ const RULES = [
       Boolean(ctx.permission) && !ctx.person && CAPABILITY.test(q) &&
       PEOPLE_OR_PRONOUN.test(q),
     build: (q, ctx) =>
+      // PERMISSION_KEY is selected so the answer can name the permission it
+      // actually queried. Without it the shaper guessed the noun from the
+      // question text and said "can delete accounts" about a query that asked
+      // about tickets - right rows, wrong sentence.
       'SELECT Users.USER_ID, Users.FULL_NAME, Users.EMAIL, Profiles.PROFILE_NAME, ' +
-      'ProfilePermissions.GRANTED ' +
+      'Permissions.PERMISSION_KEY, ProfilePermissions.GRANTED ' +
       PERMISSION_CHAIN +
       `WHERE Permissions.PERMISSION_KEY = ${lit(ctx.permission.key)} ` +
       'ORDER BY Users.FULL_NAME',
@@ -801,7 +823,7 @@ function translate(question, ctx = {}) {
   const context = {
     ...ctx,
     leadId: ctx.leadId ?? leadIdIn(question),
-    permission: ctx.permission ?? permissionTarget(question),
+    permission: ctx.permission ?? permissionTarget(question, ctx.loaded?.serviceKey ?? null),
     days: ctx.days ?? daysIn(question),
   };
 

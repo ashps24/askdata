@@ -182,7 +182,13 @@ function onConnected(r) {
   ui.askPanel.classList.remove('locked');
   ui.question.disabled = false;
   ui.askBtn.disabled = false;
-  ui.question.placeholder = "e.g. what's the source of lead 4551000000234017";
+  // An example from the service that was actually connected. A CRM prompt in
+  // a Desk session invites the one question the session cannot answer.
+  ui.question.placeholder = {
+    crm: "e.g. what's the source of lead 4551000000234017",
+    campaigns: 'e.g. can U-2004 create a segment',
+    desk: 'e.g. how many open tickets per department',
+  }[state.service] ?? "e.g. what's the source of lead 4551000000234017";
   ui.question.focus();
 
   setMsg(`Connected in ${r.latency_ms} ms.`, 'good');
@@ -400,6 +406,7 @@ function queryBlock(result) {
   const meta = [
     result.tables?.length ? `Tables: ${result.tables.join(', ')}` : null,
     result.org_scope ? `Tenant filter added automatically: ${result.org_scope}` : null,
+    result.service_scope ? `Service filter added automatically: PRODUCT = '${result.service_scope}' on shared tables` : null,
     result.engine ? `Written by: ${result.engine}` : null,
     result.replica_source ? `Read: ${result.replica_source}` : null,
   ].filter(Boolean);
@@ -657,7 +664,11 @@ function renderTableList(summary) {
       h('span', { class: 'dim', text: `${summary.total_rows.toLocaleString('en-US')} rows` })),
 
     ...[...byPack.entries()].map(([pack, tables]) => h('div', { class: 'browse-group' },
-      h('h4', { text: pack === 'platform' ? 'Users & permissions' : (SERVICE_LABELS[pack] ?? pack) }),
+      h('h4', {
+        text: pack === 'platform'
+          ? `Users & permissions${state.service && state.service !== 'all' ? ` (${SERVICE_LABELS[state.service]} only)` : ''}`
+          : (SERVICE_LABELS[pack] ?? pack),
+      }),
       ...tables.map((t) => h('button', {
         class: `browse-row${t.rows === 0 ? ' is-empty' : ''}`,
         type: 'button',
@@ -730,7 +741,11 @@ function renderStarters(list) {
 
 async function loadAudit() {
   try {
-    const { log, pending_in_spool: pendingCount } = await api('/audit?limit=40');
+    // Scoped to the connected customer. The unscoped GET showed every
+    // customer's questions under "questions you ask".
+    const { log, pending_in_spool: pendingCount } = state.token
+      ? await api('/audit', { grant_token: state.token, limit: 40 })
+      : await api('/audit?limit=40');
     fill(ui.audit,
       pendingCount
         ? h('p', { class: 'audit-pending', text: `${pendingCount} entries recorded and waiting to be written into the audit table.` })
