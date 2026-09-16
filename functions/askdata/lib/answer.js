@@ -579,6 +579,59 @@ const SHAPERS = [
       };
     },
   },
+  /* ---- email authentication: say the status, not the row count -------- */
+  {
+    /**
+     * "Is DMARC configured for this org?" The engineer asked about ONE
+     * mechanism and wants a yes/no per domain. "3 support email configurations
+     * matched" makes them read the table to find the answer the question
+     * already narrowed to.
+     */
+    id: 'email-auth',
+    match: ({ ruleId }) => ruleId === 'desk-email-auth' || ruleId === 'campaigns-sender-auth',
+    build: ({ rows, question, tables }) => {
+      if (!rows.length) return null; // GENERIC's "nothing recorded" wording is right
+      const asked = ['dmarc', 'dkim', 'spf'].filter((m) => new RegExp(`\\b${m}\\b`, 'i').test(question));
+      const mechanisms = asked.length ? asked : ['spf', 'dkim', 'dmarc'];
+      const labelCol = rows[0].SENDING_DOMAIN !== undefined ? 'SENDING_DOMAIN' : 'DOMAIN_NAME';
+      const noun = tables.includes('CMP_SenderDomains') ? 'sending domains' : 'support email domains';
+      const human = (v) => String(v ?? 'unknown').replace(/_/g, ' ');
+
+      const parts = [];
+      const lines = [];
+      for (const m of mechanisms) {
+        const col = `${m.toUpperCase()}_STATUS`;
+        const by = new Map();
+        for (const r of rows) {
+          const k = human(r[col]);
+          if (!by.has(k)) by.set(k, new Set());
+          by.get(k).add(r[labelCol] ?? r.SUPPORT_EMAIL ?? '?');
+        }
+        const ok = by.get('verified')?.size ?? 0;
+        const notOk = [...by.entries()].filter(([k]) => k !== 'verified');
+        const domains = new Set(rows.map((r) => r[labelCol] ?? r.SUPPORT_EMAIL));
+        const head = ok === domains.size
+          ? `${m.toUpperCase()} is verified on all ${fmtNumber(domains.size)} ${noun}`
+          : ok === 0
+            ? `${m.toUpperCase()} is not verified on any of the ${fmtNumber(domains.size)} ${noun}`
+            : `${m.toUpperCase()} is verified on ${fmtNumber(ok)} of ${fmtNumber(domains.size)} ${noun}`;
+        const detail = notOk.map(([k, ds]) => `${k}: ${list([...ds].slice(0, 5))}`).join('; ');
+        parts.push(detail ? `${head} (${detail})` : head);
+        lines.push(detail ? `${head} - ${detail}.` : `${head}.`);
+      }
+      const policy = mechanisms.includes('dmarc') && rows.some((r) => r.DMARC_POLICY)
+        ? ` DMARC policy: ${list([...new Set(rows.map((r) => r.DMARC_POLICY).filter(Boolean))])}.`
+        : '';
+      return {
+        summary: `${parts.join('. ')}.${policy}`,
+        ticket_comment:
+          `Hi, I checked the email authentication on the account. ${lines.join(' ')}${policy}` +
+          (parts.some((p) => /not verified|pending|failed|not configured/.test(p))
+            ? ' The records that are not verified need to be added at your DNS provider before mail from those domains is fully trusted.'
+            : ''),
+      };
+    },
+  },
 ];
 
 /* ---- generic fallback, always works ---------------------------------- */

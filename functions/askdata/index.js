@@ -55,6 +55,7 @@ const nl2zcql = require('./lib/nl2zcql');
 const llm = require('./lib/llm');
 const spell = require('./lib/spell');
 const spool = require('./lib/spool');
+const db = require('./lib/db');
 const { probeConnection } = require('./lib/connection');
 
 const app = express();
@@ -92,6 +93,7 @@ app.get('/health', (req, res) => {
       engineer: process.env.ASKDATA_DEMO_ENGINEER || null,
     },
     requireAudit: store.requireAudit(),
+    dataSource: db.source(),
   });
 });
 
@@ -560,8 +562,9 @@ app.post('/ask', async (req, res) => {
 
     /* -- 3. who or what does it name? ---------------------------------- */
     let person = null;
+    let roster = [];
     try {
-      const roster = await people.roster(catalystApp, org.ORG_ID);
+      roster = await people.roster(catalystApp, org.ORG_ID);
       const found = people.findPeople(asked, roster);
 
       if (found?.ambiguous) {
@@ -618,7 +621,7 @@ app.post('/ask', async (req, res) => {
     if (loaded.tableNames.includes('CRM_Accounts') &&
         (/\b(?:at|for|of|in)\s+[A-Z]/.test(asked) || /contact|account|company/i.test(asked))) {
       try {
-        accounts = replica.flattenRows(await catalystApp.zcql().executeZCQLQuery(
+        accounts = replica.flattenRows(await db.query(catalystApp, 
           `SELECT ACCOUNT_ID, ACCOUNT_NAME FROM CRM_Accounts WHERE ORG_ID = '${store.q(org.ORG_ID)}' LIMIT 0, 300`
         ));
         const hit = people.resolveLabel(asked, accounts, 'ACCOUNT_NAME');
@@ -657,6 +660,37 @@ app.post('/ask', async (req, res) => {
         }, {
           outcome: 'clarify', zcql: '', rowCount: 0,
           verdict: `named entity "${named}" resolved to nothing`,
+        });
+      }
+    }
+
+    // A person the question names who is not in this org at all. Rule 4 again,
+    // from the other side: the engineer must hear "no one called that here",
+    // not a generic "try naming the module" that sends them hunting for a
+    // schema problem that does not exist.
+    if (!account && !person && (rules.accessQuestion(asked, { permission: null }) || rules.permissionAction(asked) ||
+        /\b(permissions?|can|cannot|could|able|part of|assigned to|member of|logged in|last active|access to|apps?)\b/i.test(asked))) {
+      const known = [org.ORG_NAME, ...org.ORG_NAME.split(/\s+/), ...rules.vocabularyFor(loaded),
+        ...accounts.map((a) => a.ACCOUNT_NAME)];
+      const named = people.unknownName(asked, known);
+      if (named) {
+        const near = people.nearestLabels(named, roster, 'FULL_NAME', 3);
+        return finish({
+          body: {
+            mode: 'clarify',
+            question:
+              `There is no one called "${named}" in ${org.ORG_NAME}'s user list` +
+              `${near.length ? '. Did you mean one of these?' : '. Check the spelling on the ticket, or give me their user id or email.'}`,
+            candidates: near.map((u) => ({
+              user_id: u.USER_ID, full_name: mask.maskValue(u.FULL_NAME, 'name'),
+              last_login: u.LAST_LOGIN ?? null,
+              suggestion: people.replaceTerm(asked, named, u.FULL_NAME.replace(/\.$/, '')),
+            })),
+            suggestions: near.map((u) => people.replaceTerm(asked, named, u.FULL_NAME.replace(/\.$/, ''))),
+          },
+        }, {
+          outcome: 'clarify', zcql: '', rowCount: 0,
+          verdict: `named person "${named}" is not in the org roster`,
         });
       }
     }
@@ -855,7 +889,7 @@ app.post('/reveal', async (req, res) => {
     const sql =
       `SELECT ${asked.map((c) => `${canonical}.${c}`).join(', ')} FROM ${canonical} ` +
       `WHERE ${canonical}.ROWID = ${rowId} AND ${canonical}.ORG_ID = '${store.q(org.ORG_ID)}' LIMIT 0, 1`;
-    const rows = replica.flattenRows(await catalystApp.zcql().executeZCQLQuery(sql));
+    const rows = replica.flattenRows(await db.query(catalystApp, sql));
 
     if (!rows.length) {
       return res.status(404).json({ error: 'That row is not in this customer\'s data.' });
@@ -1278,6 +1312,10 @@ async function bulkCanary(catalystApp) {
     await catalystApp.datastore().table('SupportQueryLog').bulkJob('write').createJob(String(up.id), { operation: 'insert' });
     return { ok: true };
   } catch (err) {
+    // "Already under processing" is the previous canary's job still running -
+    // proof that bulk write is accepted, not a refusal. Only a quota or auth
+    // refusal means writes are unavailable.
+    if (/under processing/i.test(err.message)) return { ok: true, note: 'canary table busy - writes are accepted' };
     return { ok: false, error: err.message };
   } finally {
     try { fs.unlinkSync(tmp); } catch { /* best effort */ }
@@ -1403,6 +1441,36 @@ app.get('/admin/bulk-status', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+/* Row count per table, straight from the configured data source. Admin only;
+ * the quickest way to confirm a bulk seed actually landed. */
+app.get('/admin/counts', async (req, res) => {
+  if (!adminOk(req)) return res.status(403).json({ error: 'Admin token required.' });
+  const catalystApp = catalyst.initialize(req);
+  const names = packs.everything().allTables.map((t) => t.name);
+  const counts = {};
+  for (const name of names) {
+    try {
+      const rows = await db.query(catalystApp, `SELECT COUNT(ROWID) FROM ${name}`);
+      const cell = rows[0]?.[name] ?? rows[0] ?? {};
+      counts[name] = Number(Object.values(cell)[0] ?? 0);
+    } catch (err) { counts[name] = `error: ${err.message}`; }
+  }
+  res.json({ dataSource: db.source(), tables: names.length, counts });
+});
+
+/* Raw read-only ZCQL against the configured data source. Admin only, SELECT
+ * only - a debugging aid for "why did that join return nothing", never a path
+ * the client uses. */
+app.post('/admin/zcql', async (req, res) => {
+  if (!adminOk(req)) return res.status(403).json({ error: 'Admin token required.' });
+  const zcql = String(req.body?.zcql ?? '').trim();
+  if (!/^select\s/i.test(zcql)) return res.status(400).json({ error: 'SELECT only.' });
+  try {
+    const rows = await db.query(catalyst.initialize(req), zcql);
+    res.json({ ok: true, rows: replica.flattenRows(rows) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 app.post('/admin/seed', async (req, res) => {

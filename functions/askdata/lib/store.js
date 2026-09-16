@@ -1,5 +1,7 @@
 'use strict';
 
+const db = require('./db');
+
 /**
  * AskData's own tables: the org registry, the entitlement check, and the audit
  * log. All read and written directly by the server - none of them is in the
@@ -49,7 +51,7 @@ function registryFallback() {
 }
 
 async function findOrgByZgid(catalystApp, zgid) {
-  const result = await catalystApp.zcql().executeZCQLQuery(
+  const result = await db.query(catalystApp, 
     `SELECT ${ORG_COLUMNS} FROM Orgs WHERE ZGID = '${q(zgid)}' LIMIT 1`
   );
   return flattenRows(result)[0] ?? registryFallback().find((o) => o.ZGID === String(zgid)) ?? null;
@@ -67,14 +69,14 @@ async function findOrgByZgid(catalystApp, zgid) {
 async function findOrgByServiceId(catalystApp, service, serviceOrgId) {
   const column = SERVICE_COLUMN[String(service ?? '').toLowerCase()];
   if (!column) return null;
-  const result = await catalystApp.zcql().executeZCQLQuery(
+  const result = await db.query(catalystApp, 
     `SELECT ${ORG_COLUMNS} FROM Orgs WHERE ${column} = '${q(serviceOrgId)}' LIMIT 1`
   );
   return flattenRows(result)[0] ?? registryFallback().find((o) => o[column] === String(serviceOrgId)) ?? null;
 }
 
 async function listOrgs(catalystApp) {
-  const result = await catalystApp.zcql().executeZCQLQuery(
+  const result = await db.query(catalystApp, 
     `SELECT ${ORG_COLUMNS} FROM Orgs ORDER BY ORG_NAME LIMIT 0, 50`
   );
   const rows = flattenRows(result);
@@ -96,7 +98,7 @@ async function listOrgs(catalystApp) {
  * you to org B, and neither does a closed one.
  */
 async function entitlementFor(catalystApp, { engineerEmail, zgid, ticketId }) {
-  const result = await catalystApp.zcql().executeZCQLQuery(
+  const result = await db.query(catalystApp, 
     `SELECT ENTITLEMENT_ID, ORG_ID, ENGINEER_EMAIL, ZGID, TICKET_ID, KIND, TICKET_STATUS, ` +
     `VALID_FROM, VALID_UNTIL FROM SupportEntitlements ` +
     `WHERE ENGINEER_EMAIL = '${q(engineerEmail)}' AND ZGID = '${q(zgid)}' LIMIT 0, 50`
@@ -131,7 +133,7 @@ async function entitlementFor(catalystApp, { engineerEmail, zgid, ticketId }) {
  * server can only report as "no live reason to open this customer".
  */
 async function myEntitlements(catalystApp, engineerEmail) {
-  const result = await catalystApp.zcql().executeZCQLQuery(
+  const result = await db.query(catalystApp, 
     `SELECT ORG_ID, ZGID, TICKET_ID, KIND, TICKET_STATUS, VALID_FROM, VALID_UNTIL ` +
     `FROM SupportEntitlements WHERE ENGINEER_EMAIL = '${q(engineerEmail)}' LIMIT 0, 200`
   );

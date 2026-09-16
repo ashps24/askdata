@@ -28,49 +28,10 @@ the guard's allow-list cannot drift apart.
 
 ### What still needs you
 
-Two things are blocked on actions only you can take. Neither stops the app
+One thing is blocked on an action only you can take. It does not stop the app
 working — every question in the Starters panel is answered today.
 
-**1. Data Store write allowances are exhausted.** Reads, updates and deletes
-still work, so the app answers normally. Two consequences:
-
-*Sample data* was loaded through bulk write, which is metered separately from
-row inserts - `/admin/bulk-seed` generates a CSV per table, uploads it and
-starts a job. All ten companies are loaded. That allowance is now spent too.
-
-*Audit rows* are no longer lost. `insertRow` fails, so `lib/spool.js` holds each
-entry in Stratus instead - one object per entry, durable and enumerable - and
-`/audit` merges them in, marked `pending`, so a reviewer sees the whole trail.
-`/admin/audit-drain` moves them into `SupportQueryLog` by bulk write and deletes
-them only once the rows have landed; it is waiting on the same allowance.
-
-Enable a payment method on the project, then drain the spool and, if you want
-to reload the sample data from scratch:
-
-```bash
-BASE=https://askdata-876513394.development.catalystserverless.com/server/askdata
-curl -s -X POST "$BASE/admin/audit-drain" -H 'x-askdata-admin: askdata-dev-admin-2026' \
-     -H 'Content-Type: application/json' -d '{}'
-```
-
-
-```bash
-BASE=https://askdata-876513394.development.catalystserverless.com/server/askdata
-curl -s -X POST "$BASE/admin/seed" -H 'x-askdata-admin: askdata-dev-admin-2026' \
-     -H 'Content-Type: application/json' -d '{"audit_per_org":60}'
-curl -s -X POST "$BASE/admin/provision-refs" -H 'x-askdata-admin: askdata-dev-admin-2026'
-```
-
-That is ~6,350 inserts for all ten companies across 44 tables - including the
-24 configuration tables (Desk email authentication, Guided Conversations,
-custom functions, assignment rules, help centers; Campaigns sender domains,
-journeys, forms, A/B tests; CRM workflow, assignment, blueprint, duplicate and
-sharing rules; and the Zoho Directory pack) which exist in the Data Store but
-hold no rows until this runs. The seeder probes with a single
-row first and **refuses to start if writes are unavailable**, because it wipes
-each table before refilling it — an earlier run lost four stages that way.
-
-**2. The model translator needs a Connection only you can authorize.**
+**The model translator needs a Connection only you can authorize.**
 Catalyst console → project **AskData** → **Connections** → create one named
 exactly **`quickmlcon`** with scope **`QuickML.deployment.READ`**, and
 authorize it. It cannot be created from the CLI or MCP: it needs an OAuth
@@ -82,21 +43,58 @@ serving is provisioned per project, and AskData's own project is not one, so
 leaving it unset would 404 *after* the Connection started working and look
 like a broken Connection.
 
-Check both at any time with `GET /diag`, which reports each step, what is
-still missing, and the exact next action — without printing any token
-material:
-
-```json
-{ "setup": { "ready": false,
-             "next": "Catalyst console -> ... create one named exactly \"quickmlcon\" ...",
-             "fallback": "32 deterministic rules, labelled \"rules\" on every answer." } }
-```
-
+Check it at any time with `GET /diag`, which reports each step, what is still
+missing, and the exact next action — without printing any token material.
 Until the Connection exists every answer is labelled **`RULES`**, so nobody
 mistakes a pattern-matched answer for a translated one. Misspellings are still
 handled — `lib/spell.js` corrects against the schema's own lexicon before
 either engine runs, and is deliberately independent of the model for exactly
 this reason.
+
+### Data: the Data Store is loaded
+
+Billing is enabled on the project, so Data Store writes work again. All ten
+companies are loaded across the 44 tables — 6,384 business rows, every `_REF`
+foreign key resolved (0 unresolved), and the audit spool drained into
+`SupportQueryLog`. `GET /health` reports `"dataSource": "datastore"`.
+
+`ASKDATA_DATA_SOURCE` in `functions/askdata/catalyst-config.json` picks where
+reads go:
+
+| value | reads come from | when |
+|---|---|---|
+| `datastore` (default, deployed) | Catalyst Data Store via ZCQL | normal operation |
+| `seed` | `lib/seeddb.js`, an in-memory ZCQL evaluator over `lib/seed.js` | writes unavailable, or offline demos |
+
+The seed engine exists because the free-tier insert *and* bulk-write meters
+were both exhausted before billing was purchased; it evaluates the same ZCQL
+the guard emits (joins on declared `_REF`s, aggregates, GROUP BY, ORDER BY,
+LIMIT), so the rules, guard and shapers were exercised unchanged while the
+Data Store was read-only. It is loaded lazily — `seeddb → seed → replica → db`
+would otherwise be a require cycle that hands `replica.js` an empty `db`.
+
+To reload from scratch (the seeder proves bulk write is accepted with a
+one-row canary **before** it wipes anything — an earlier run lost four stages
+when the wipe ran and the refill was refused):
+
+```bash
+BASE=https://askdata-876513394.development.catalystserverless.com/server/askdata
+for s in platform crm campaigns desk audit crm_config campaigns_config desk_config directory; do
+  curl -s -X POST "$BASE/admin/bulk-seed" -H 'x-askdata-admin: askdata-dev-admin-2026'        -H 'Content-Type: application/json' -d "{\"only\":\"$s\",\"wipe\":true}"; echo
+done
+# wait for the jobs, then - and only then - link the foreign keys
+curl -s "$BASE/admin/counts" -H 'x-askdata-admin: askdata-dev-admin-2026'
+curl -s -X POST "$BASE/admin/provision-refs" -H 'x-askdata-admin: askdata-dev-admin-2026'
+```
+
+`provision-refs` links whatever rows exist when it runs: run it while a stage
+is still landing and that stage reports `linked=0 unresolved=0` — not an
+error, just nothing to link yet. Check `/admin/counts` first, and read the
+per-table `linked` numbers rather than the totals.
+
+Admin helpers (all need `x-askdata-admin`): `GET /admin/counts` — rows per
+table from the configured source; `POST /admin/zcql {zcql}` — raw read-only
+SELECT, for "why did that join return nothing".
 
 ### What is real, and what is modelled
 
@@ -284,18 +282,32 @@ belongs in it.
 
 ## Seed data
 
-Three orgs, sized differently so tenant isolation is testable, and shaped around
-the real escalations. A generator producing plausible-but-random rows cannot
-demonstrate a correct answer, so the facts the questions turn on are written
-explicitly and deterministic filler surrounds them.
+Ten companies, sized and subscribed differently so tenant isolation and
+service scoping are testable, and shaped around the real escalations. A
+generator producing plausible-but-random rows cannot demonstrate a correct
+answer, so the facts the questions turn on are written explicitly and
+deterministic filler surrounds them.
 
-| ZGID | Org | DC | Products | Shaped for |
-|---|---|---|---|---|
-| `60021847312` | Northwind Traders | in | crm, campaigns, desk | lead source, the export question |
-| `60021847313` | Contoso Ltd | com | crm, campaigns | the Campaigns permission question |
-| `60021847314` | Fabrikam Inc | eu | crm, desk | the Desk department question |
+| Org | Products | Edition |
+|---|---|---|
+| Northwind Traders | crm, campaigns, desk, directory | Enterprise |
+| Contoso Ltd | crm, campaigns | Professional |
+| Fabrikam Inc | crm, desk, directory | Enterprise |
+| Zylker Corp | crm, campaigns, desk, directory | Enterprise |
+| Acme Retail Group | crm, desk, directory | Enterprise |
+| Vertex Financial | crm | Professional |
+| Helios Manufacturing | crm, campaigns, desk, directory | Enterprise |
+| Meridian Healthcare | crm, desk | Professional |
+| Solstice Media | crm, campaigns | Standard |
+| Ironclad Logistics | crm, campaigns, desk, directory | Enterprise |
 
-2,797 rows. The load-bearing specifics:
+Service org ids are per product — `CRM_ORG_ID` `600218…`, `CMP_ORG_ID`
+`700315…`, `DESK_ORG_ID` `800427…`, `DIR_ORG_ID` `900531…` — and the connect
+panel resolves whichever one the ticket carries. 12 users per org; every
+Enterprise org has the Directory pack. The same dataset is in
+`AskData-sample-data-10-companies.xlsx` (46 sheets).
+
+6,384 rows. The load-bearing specifics (Northwind unless stated):
 
 - lead **4551000000234017** — source `Trade Show`, created 12 Aug 2026,
   `MODIFIED_ON` equal to `CREATED_ON` so "no change since creation" is *true*

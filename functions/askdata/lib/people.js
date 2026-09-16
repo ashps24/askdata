@@ -1,5 +1,7 @@
 'use strict';
 
+const db = require('./db');
+
 /**
  * Resolving the person a question names - and refusing to guess.
  *
@@ -48,9 +50,11 @@ const NOISE = new Set([
 ]);
 
 function normalise(s) {
+  // A full stop is a separator, not part of the name: the roster stores
+  // "Ashwin P." and the engineer types "Ashwin P". Same person.
   return String(s ?? '')
     .toLowerCase()
-    .replace(/[^a-z0-9\s'.-]/g, ' ')
+    .replace(/[^a-z0-9\s'-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -72,7 +76,7 @@ async function roster(catalystApp, orgId) {
   const hit = cache.get(orgId);
   if (hit && Date.now() < hit.expiresAt) return hit.people;
 
-  const result = await catalystApp.zcql().executeZCQLQuery(
+  const result = await db.query(catalystApp, 
     `SELECT USER_ID, ZUID, FULL_NAME, EMAIL, STATUS, LAST_LOGIN FROM Users ` +
     `WHERE ORG_ID = '${q(orgId)}' LIMIT 0, 300`
   );
@@ -106,6 +110,23 @@ function findPeople(question, people) {
   const byFull = people.filter((p) => hasWord(text, normalise(p.FULL_NAME)));
   if (byFull.length === 1) return { matches: byFull, tier: 'full name', ambiguous: false, term: byFull[0].FULL_NAME };
   if (byFull.length > 1) return { matches: byFull, tier: 'full name', ambiguous: true, term: normalise(byFull[0].FULL_NAME) };
+
+  // 2b. first name plus surname initial - "Ashwin P" for Ashwin Prakash. This
+  //     IS unambiguous when exactly one person fits; Ashwin Menon does not.
+  //     The term is the whole "ashwin p" so a clarify suggestion replaces both
+  //     words, not just the first.
+  const byInitial = [];
+  let initialTerm = null;
+  for (const p of people) {
+    const parts = normalise(p.FULL_NAME).split(' ').filter(Boolean);
+    if (parts.length < 2) continue;
+    const first = parts[0]; const last = parts[parts.length - 1];
+    if (first.length < 3 || NOISE.has(first)) continue;
+    const term = `${first} ${last[0]}`;
+    if (hasWord(text, term) && !hasWord(text, `${first} ${last}`)) { byInitial.push(p); initialTerm = term; }
+  }
+  if (byInitial.length === 1) return { matches: byInitial, tier: 'first name + initial', ambiguous: false, term: initialTerm };
+  if (byInitial.length > 1) return { matches: byInitial, tier: 'first name + initial', ambiguous: true, term: initialTerm };
 
   // 3. the email local part
   const byEmail = people.filter((p) => {
@@ -211,3 +232,36 @@ function nearestLabels(name, rows, column, limit = 3) {
 }
 
 module.exports.nearestLabels = nearestLabels;
+
+/**
+ * A phrase that reads like a person's name and matched nobody: two or more
+ * capitalised words in a row (an initial counts), not at the start of the
+ * sentence, none of them a word the schema or the org already owns.
+ *
+ * Returns the phrase or null. Deliberately conservative - a false "no one
+ * called X" is worse than falling through to the ordinary clarify.
+ */
+function unknownName(question, known = []) {
+  const skip = new Set(known.map((w) => String(w).toLowerCase().replace(/\.$/, '')));
+  const tokens = String(question ?? '').split(/\s+/).filter(Boolean);
+  const isCap = (w) => /^[A-Z][a-z]+[,?.!]?$|^[A-Z]\.?[,?.!]?$/.test(w);
+  const clean = (w) => w.replace(/[,?.!]+$/, '');
+
+  let i = 0;
+  while (i < tokens.length) {
+    if (!isCap(tokens[i])) { i++; continue; }
+    let j = i;
+    while (j < tokens.length && isCap(tokens[j])) j++;
+    let run = tokens.slice(i, j).map(clean);
+    if (i === 0) run = run.slice(1); // "Does", "Which", "Is" - the sentence's own capital
+    const phrase = run.join(' ');
+    if (run.length >= 2 && !skip.has(phrase.toLowerCase()) &&
+        !run.some((w) => skip.has(w.toLowerCase().replace(/\.$/, ''))) &&
+        run.some((w) => w.length > 2)) {
+      return phrase;
+    }
+    i = j;
+  }
+  return null;
+}
+module.exports.unknownName = unknownName;

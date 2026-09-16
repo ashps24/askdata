@@ -1,5 +1,7 @@
 'use strict';
 
+const db = require('./db');
+
 /**
  * The read path, and the honesty about it.
  *
@@ -100,7 +102,7 @@ async function read(catalystApp, org, zcql) {
   const dc = resolveDc(org);
   const started = Date.now();
 
-  const raw = await catalystApp.zcql().executeZCQLQuery(zcql);
+  const raw = await db.query(catalystApp, zcql);
 
   const rows = normaliseValues(flattenRows(raw));
   const columns = [...new Set(rows.flatMap((r) => Object.keys(r)))];

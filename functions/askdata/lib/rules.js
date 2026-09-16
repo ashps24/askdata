@@ -870,7 +870,7 @@ const RULES = [
   },
   {
     id: 'directory-tenant',
-    when: (q) => any('tenant', 'connected to', 'directory store', 'synced from', 'sync source', 'active directory', 'azure ad', 'verified domain')(q),
+    when: (q) => any('tenant', 'connected to', 'directory store', 'synced from', 'sync source', 'active directory', 'azure ad', 'verified domain', 'domains are verified', 'domain verification', 'which domains')(q),
     build: () =>
       'SELECT DIR_Domains.DOMAIN_NAME, DIR_Domains.VERIFICATION_STATUS, DIR_Domains.TENANT_NAME, DIR_Domains.TENANT_ID, ' +
       'DIR_Domains.SYNC_SOURCE, DIR_Domains.IS_PRIMARY FROM DIR_Domains ORDER BY DIR_Domains.IS_PRIMARY DESC',
@@ -898,8 +898,8 @@ const RULES = [
     when: (q) => any('directory group', 'collaboration group', 'groups in directory', 'org chart')(q)
       || (any('group')(q) && !any('by ', 'permission', 'department')(q)),
     build: () =>
-      'SELECT DIR_Groups.GROUP_NAME, DIR_Groups.GROUP_TYPE, DIR_Groups.MEMBER_COUNT, Users.FULL_NAME, DIR_Groups.CREATED_ON ' +
-      'FROM DIR_Groups LEFT JOIN Users ON DIR_Groups.OWNER_REF = Users.ROWID ORDER BY DIR_Groups.GROUP_TYPE',
+      'SELECT DIR_Groups.GROUP_NAME, DIR_Groups.GROUP_TYPE, DIR_Groups.MEMBER_COUNT, DIR_Groups.OWNER_ID, DIR_Groups.CREATED_ON ' +
+      'FROM DIR_Groups ORDER BY DIR_Groups.GROUP_TYPE',
   },
 
   /* -- campaigns --------------------------------------------------------- */
@@ -1069,12 +1069,19 @@ function suggestionsFor(loaded) {
     );
   }
   if (loaded.productKeys.includes('crm')) {
-    out.push('is there a duplicate rule on leads', 'which workflow rules are active');
+    out.push(
+      'is there a duplicate rule on leads',
+      'which workflow rules are active',
+      'which blueprints are active',
+      'is there a round robin rule for leads',
+      'what data sharing rules are set up'
+    );
   }
   if (loaded.productKeys.includes('campaigns')) {
     out.push(
       'can <user> create a segment in campaigns', 'list the segments',
-      'is the sending domain authenticated', 'which journeys are active'
+      'is the sending domain authenticated', 'which journeys are active',
+      'which signup forms are collecting the most', 'show me the a/b tests', 'what topics can contacts subscribe to'
     );
   }
   if (loaded.productKeys.includes('desk')) {
@@ -1084,6 +1091,10 @@ function suggestionsFor(loaded) {
       'is the customer portal in use',
       'which guided conversation flows are published',
       'are any custom functions failing',
+      'which workflow rules are active',
+      'what are the business hours',
+      'is ip range restriction enabled',
+      'is sentiment analysis enabled',
       'which departments is <user> in', 'how many open tickets per department'
     );
   }
@@ -1092,7 +1103,9 @@ function suggestionsFor(loaded) {
       'have security policies been configured',
       'which tenant is this org connected to',
       'is <user> part of any apps',
-      'which apps have sso enabled'
+      'which apps have sso enabled',
+      'which groups exist in directory',
+      'which domains are verified'
     );
   }
   out.push(

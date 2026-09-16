@@ -72,6 +72,28 @@ const BASE_LEXICON = [
   'fields', 'source', 'sources', 'stage', 'stages', 'status', 'owner', 'value',
   'amount', 'pipeline', 'revenue', 'company', 'organisation', 'organization',
   'org', 'email', 'emails', 'phone', 'name', 'names', 'licence', 'license',
+  // ordinary English that is one edit from a schema word and must stay as typed
+  // ("part" is not "past"; "apps" is not "app")
+  'part', 'parts', 'apps', 'app', 'many', 'anything', 'something', 'nothing',
+  'everything', 'thing', 'things', 'kind', 'kinds', 'type', 'types', 'sort',
+  'them', 'then', 'they', 'here', 'now', 'just', 'like', 'same', 'other',
+  'another', 'again', 'once', 'ever', 'even', 'very', 'well', 'good', 'bad',
+  'new', 'old', 'long', 'short', 'high', 'low', 'big', 'small', 'full', 'empty',
+  'open', 'closed', 'close', 'live', 'work', 'works', 'working', 'worked',
+  'exist', 'exists', 'existing', 'configured', 'configure', 'configuration',
+  'setup', 'set', 'turned', 'turn', 'connected', 'connect', 'connection',
+  'tenant', 'domain', 'domains', 'verified', 'policy', 'policies', 'security',
+  'group', 'groups', 'application', 'applications', 'rule', 'rules', 'flow',
+  'flows', 'function', 'functions', 'custom', 'guided', 'conversation',
+  'conversations', 'assignment', 'round', 'robin', 'skill', 'skills', 'based',
+  'business', 'hours', 'help', 'center', 'centre', 'workflow', 'workflows',
+  'blueprint', 'blueprints', 'duplicate', 'duplicates', 'sharing', 'journey',
+  'journeys', 'signup', 'form', 'forms', 'test', 'tests', 'topic', 'topics',
+  'sender', 'senders', 'authenticated', 'authentication', 'dkim', 'dmarc',
+  'spf', 'zia', 'setting', 'settings', 'ones', 'both', 'several', 'lot', 'lots',
+  'someone', 'whoever', 'whether', 'either', 'neither', 'while', 'until',
+  'against', 'through', 'across', 'under', 'over', 'within', 'per', 'via',
+  'because', 'unless', 'except', 'including', 'currently', 'right', 'wrong',
 ];
 
 /** Tokens that must never be treated as misspellings. */
