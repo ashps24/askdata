@@ -429,8 +429,12 @@ const SHAPERS = [
   /* ---- 4. department membership --------------------------------------- */
   {
     id: 'department-membership',
+    // Only when the result actually lists departments. A membership table can
+    // also be the route to "which agents are in more than one department",
+    // whose rows are people - that is the generic shaper's job.
     match: ({ tables, columns }) =>
-      tables.includes('DESK_DepartmentMembers') || (tables.includes('DESK_Departments') && columns.includes('ROLE_IN_DEPT')),
+      columns.includes('DEPARTMENT_NAME') &&
+      (tables.includes('DESK_DepartmentMembers') || (tables.includes('DESK_Departments') && columns.includes('ROLE_IN_DEPT'))),
     build: ({ rows, question }) => {
       const wanted = /should be in (?:the )?([A-Za-z][\w &-]{1,40}?)(?: department)?\b/i.exec(question)?.[1]?.trim();
 
@@ -681,12 +685,14 @@ const GENERIC = {
 /* -------------------------------------------------------------- helpers */
 
 function labelColumn(columns) {
-  const preferred = [
-    'FULL_NAME', 'DEPARTMENT_NAME', 'PROFILE_NAME', 'PERMISSION_KEY', 'ACCOUNT_NAME',
-    'DEAL_NAME', 'SEGMENT_NAME', 'LIST_NAME', 'CAMPAIGN_NAME', 'SUBJECT', 'LEAD_ID', 'EMAIL',
-  ];
-  for (const p of preferred) if (columns.includes(p)) return p;
-  return columns.find((c) => /_NAME$/.test(c)) ?? null;
+  // The subject's own label comes first in a SELECT, whichever table it is
+  // from - "which policies were modified" lists POLICY_NAME before the
+  // modifier's FULL_NAME. Take the first name-like column in query order, so
+  // a joined person's name never becomes the label of a policy or a rule.
+  const nameLike = columns.filter((c) => /_NAME$|^PERMISSION_KEY$|^SUBJECT$/.test(c));
+  if (nameLike.length) return nameLike[0];
+  for (const p of ['LEAD_ID', 'EMAIL']) if (columns.includes(p)) return p;
+  return null;
 }
 
 function nounFor(tables, loaded, count) {

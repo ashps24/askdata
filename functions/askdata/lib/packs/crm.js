@@ -78,7 +78,7 @@ module.exports = {
         { name: 'ORG_ID', type: 'varchar', max_length: 64, mandatory: true, indexed: true },
         { name: 'ACCOUNT_ID', type: 'varchar', max_length: 32, indexed: true },
         { name: 'ACCOUNT_NAME', type: 'varchar', max_length: 160, indexed: true },
-        { name: 'INDUSTRY', type: 'varchar', max_length: 60, indexed: true },
+        { name: 'INDUSTRY', type: 'varchar', max_length: 60, indexed: true, values: ['Technology', 'Retail', 'Healthcare', 'Logistics', 'Manufacturing', 'Media', 'Energy'] },
         { name: 'OWNER_ID', type: 'varchar', max_length: 32, indexed: true },
         { name: 'CREATED_ON', type: 'datetime', indexed: true },
       ],

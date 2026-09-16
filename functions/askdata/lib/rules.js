@@ -1055,6 +1055,68 @@ function translate(question, ctx = {}) {
   return null;
 }
 
+/**
+ * The parts of a question a matched rule does NOT account for.
+ *
+ * A rule matches on a few words - "how many contacts" - so "how many contacts
+ * were created in 2026" matches the same rule and would be answered with the
+ * org-wide count: a confident number for a different question. Each pattern
+ * below is a qualifier that changes the answer. A rule is credited with the
+ * ones its own source consults (the time-window rules read `days`, the lead
+ * rules read `leadId`); anything left over is a residual, and a residual means
+ * the rule alone must not answer.
+ */
+const QUALIFIERS = [
+  { key: 'ranking', re: /\b(top|bottom|first|highest|lowest|most|fewest|largest|smallest|biggest)\b(?!\s+recent)/i },
+  { key: 'comparison', re: /\b(above|below|over|under|more than|less than|greater than|fewer than|at least|at most|between|exceed\w*)\b/i },
+  { key: 'per-group', re: /\b(average|avg|mean|median|per|each|every|group(?:ed)? by)\b/i },
+  { key: 'year', re: /\b(in|since|during|before|after|from)\s+(19|20)\d\d\b/i },
+  { key: 'exclusion', re: /\b(but|except|excluding|without|never|not yet|only|other than)\b/i },
+  { key: 'priority', re: /\b(high|low|urgent|medium|critical)\s+priority\b/i },
+  { key: 'status-value', re: /\b(open|closed|pending|overdue|escalated|converted|unconverted|won|lost|active|inactive)\b/i },
+  { key: 'named-value', re: /\b(?:in|to|for|from|assigned to|owned by)\s+(?!this\b|the\b|our\b|that\b|any\b)[A-Z][A-Za-z]+\b/ },
+  { key: 'plural-membership', re: /\bmore than one\b|\bmultiple\b|\bseveral\b/i },
+  { key: 'rate', re: /\b(rate|ratio|percent(?:age)?|%)\b/i },
+  { key: 'days', re: /\b(last|past|previous|within|recent)\s+(\d+|one|two|three|a|an)?\s*(days?|weeks?|months?|quarters?|years?|fortnight)\b|\bthis\s+(year|month|week|quarter)\b|\byear to date\b|\b(today|yesterday)\b/i },
+  { key: 'leadId', re: /\b\d{10,}\b/ },
+];
+
+/** Which qualifier keys a rule's own code reads, by inspection of its source. */
+function ruleHandles(rule) {
+  const src = `${rule.when}\n${rule.build}`;
+  const keys = new Set();
+  if (/\bdays\b/.test(src)) keys.add('days');
+  if (/leadId/.test(src)) keys.add('leadId');
+  if (/STATUS|status|open/.test(src)) keys.add('status-value');
+  if (/PRIORITY|priority/.test(src)) keys.add('priority');
+  if (/GROUP BY/.test(src)) keys.add('per-group');
+  if (/ORDER BY[^']*DESC/.test(src) && /LIMIT/.test(src)) keys.add('ranking');
+  if (/RATE|rate/.test(src)) keys.add('rate');
+  if (rule.about === 'access') keys.add('status-value'); // "can delete leads" is a capability, not a status filter
+  return keys;
+}
+
+/**
+ * Residual qualifiers: what the question asks for that `ruled` will ignore.
+ * Empty means the rule answers the whole question. `ignore` lists qualifiers
+ * the caller has already resolved (a named person or account).
+ */
+function residual(question, ruled, ignore = []) {
+  if (!ruled) return [];
+  const rule = RULES.find((r) => r.id === ruled.ruleId);
+  if (!rule) return [];
+  const handled = ruleHandles(rule);
+  for (const k of ignore) handled.add(k);
+  const text = String(question ?? '');
+  const out = [];
+  for (const { key, re } of QUALIFIERS) {
+    if (handled.has(key)) continue;
+    const m = re.exec(text);
+    if (m) out.push({ key, phrase: m[0].trim() });
+  }
+  return out;
+}
+
 /** Concrete suggestions, drawn from the loaded packs - never "please rephrase". */
 function suggestionsFor(loaded) {
   const out = [];
@@ -1122,4 +1184,5 @@ module.exports = {
   namedEntity,
   vaguePersonReference,
   leadIdIn, daysIn, daysAgo, expectedDepartment, permissionTarget, permissionAction, modulesFor,
+  residual, QUALIFIERS,
 };

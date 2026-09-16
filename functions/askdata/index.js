@@ -702,36 +702,56 @@ app.post('/ask', async (req, res) => {
     // Desk question was answered with a CRM permission key.
     const resolved = { person, account, loaded };
 
-    /* -- 4. translate: model first, rules behind it -------------------- */
+    /* -- 4. translate: rules first, the model only for a NEW question ---- */
+    // The 55 rules are the reviewed, deterministic answers to the questions
+    // support actually asks; they cost nothing and cannot drift. The model is
+    // reached only when none of them matches - so a question the rules answer
+    // is never re-answered differently on a day the model is in a mood, and
+    // every model call is one that would otherwise have been an escalation.
     let proposed = null;
     let engine = null;
     let modelNote = null;
 
-    try {
-      const out = await nl2zcql.translate(catalystApp, { question: asked, loaded, history, person });
-      if (out.intent === 'refuse') {
-        modelNote = `model refused: ${out.explanation || 'no reason given'}`;
-      } else if (out.intent === 'clarify' || out.confidence < nl2zcql.CONFIDENCE_FLOOR) {
-        modelNote = `model ${out.intent === 'clarify' ? 'asked to clarify' : `was unsure (${out.confidence})`}`;
-        if (out.intent === 'clarify' && out.clarify_question) {
-          return finish({
-            body: { mode: 'clarify', question: out.clarify_question, suggestions: rules.suggestionsFor(loaded) },
-          }, { outcome: 'clarify', zcql: out.zcql, rowCount: 0, verdict: modelNote });
-        }
-      } else if (out.zcql) {
-        proposed = out.zcql;
-        engine = 'model';
-      }
-    } catch (err) {
-      modelNote = `model unavailable: ${err.message}`;
-      console.warn(modelNote);
-    }
+    const ruled = rules.translate(asked, resolved);
+    // A rule that matched on a few words but ignores a qualifier the question
+    // carries ("how many contacts ... created in 2026") must not answer alone:
+    // it would give a confident number for a different question. The model
+    // gets first go at those; the rule is the fallback, and says what it dropped.
+    const leftovers = rules.residual(asked, ruled, [
+      person ? 'named-value' : null, account ? 'named-value' : null,
+    ].filter(Boolean));
+    let caveat = null;
 
-    if (!proposed) {
-      const ruled = rules.translate(asked, resolved);
-      if (ruled) {
+    if (ruled && !leftovers.length) {
+      proposed = ruled.zcql;
+      engine = `rules:${ruled.ruleId}`;
+    } else {
+      try {
+        const out = await nl2zcql.translate(catalystApp, { question: asked, loaded, history, person });
+        if (out.intent === 'refuse') {
+          modelNote = `model refused: ${out.explanation || 'no reason given'}`;
+        } else if (out.intent === 'clarify' || out.confidence < nl2zcql.CONFIDENCE_FLOOR) {
+          modelNote = `model ${out.intent === 'clarify' ? 'asked to clarify' : `was unsure (${out.confidence})`}`;
+          if (out.intent === 'clarify' && out.clarify_question) {
+            return finish({
+              body: { mode: 'clarify', question: out.clarify_question, suggestions: rules.suggestionsFor(loaded) },
+            }, { outcome: 'clarify', zcql: out.zcql, rowCount: 0, verdict: modelNote });
+          }
+        } else if (out.zcql) {
+          proposed = out.zcql;
+          engine = 'model';
+        }
+      } catch (err) {
+        modelNote = `model unavailable: ${err.message}`;
+        console.warn(modelNote);
+      }
+
+      if (!proposed && ruled) {
+        // Nothing better: answer the part the rule covers, and say so up front.
         proposed = ruled.zcql;
         engine = `rules:${ruled.ruleId}`;
+        caveat = `Answered without "${leftovers.map((l) => l.phrase).join('", "')}" - ` +
+          `the ${modelNote ? 'model could not translate that part' : 'saved rule does not filter on it'}.`;
       }
     }
 
@@ -813,7 +833,8 @@ app.post('/ask', async (req, res) => {
         // send the reveal. Null when the answer cannot be revealed against a
         // single row - an aggregate, or PII from two tables at once.
         reveal_table: compiled.revealTable,
-        summary: described.summary,
+        summary: caveat ? `${caveat} ${described.summary}` : described.summary,
+        caveat,
         ticket_comment: described.ticket_comment,
         highlights: described.highlights,
         masked: masked.masked,

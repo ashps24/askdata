@@ -22,6 +22,7 @@
 const { chat } = require('./llm');
 
 const MODEL_TIMEOUT_MS = Number(process.env.ASKDATA_MODEL_TIMEOUT_MS || 12000);
+const time = require('./time');
 const CONFIDENCE_FLOOR = Number(process.env.ASKDATA_CONFIDENCE_FLOOR || 0.6);
 
 /** The engine's real limits, stated as rules because breaking them fails silently. */
@@ -45,6 +46,13 @@ const ENGINE_RULES = [
   'At most 20 columns. Name the columns a reader needs rather than using SELECT *.',
   'A WHERE clause must filter on at least one indexed column (marked * below), unless the',
   '  query is a COUNT/SUM/GROUP BY over the whole module.',
+  'Filter ONLY on what the question asks. Never add a default time window, status or',
+  '  other condition the engineer did not state - "campaigns with open rate below 20" means',
+  '  every campaign with OPEN_RATE < 20, not only recent ones.',
+  'Datetime columns compare only against a literal in the exact form \'YYYY-MM-DD HH:MM:SS\'.',
+  '  There are no date functions (no NOW(), CURRENT_DATE, DATE_SUB, INTERVAL): work the',
+  '  absolute value out from the current time given below and write it as a literal.',
+  '  "in 2026" means >= \'2026-01-01 00:00:00\' AND < \'2027-01-01 00:00:00\'.',
 ];
 
 /** The schema card: only the loaded packs, with indexes and PII marked. */
@@ -164,6 +172,25 @@ function extractJson(text) {
  * Ask the model. Returns the parsed decision, or throws.
  * Never falls back itself - the caller decides, so the reason stays visible.
  */
+/**
+ * The engine discards `AS alias` on aggregates and then fails on any ORDER BY
+ * or HAVING that names the alias ("Unknown Column segment_count in ORDER BY").
+ * The model is told this and still writes it about one time in five, so the
+ * alias is folded back into the expression here rather than escalated.
+ */
+function dealias(zcql) {
+  let out = String(zcql ?? '');
+  const aliases = new Map();
+  out = out.replace(/((?:COUNT|SUM|AVG|MIN|MAX)\s*\([^()]*\))\s+AS\s+([A-Za-z_][A-Za-z0-9_]*)/gi, (m, expr, alias) => {
+    aliases.set(alias, expr);
+    return expr;
+  });
+  for (const [alias, expr] of aliases) {
+    out = out.replace(new RegExp(`(ORDER\\s+BY|HAVING)([^;]*?)\\b${alias}\\b`, 'gi'), (m, kw, mid) => `${kw}${mid}${expr}`);
+  }
+  return out;
+}
+
 async function translate(catalystApp, { question, loaded, history = [], person = null }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
@@ -196,7 +223,7 @@ async function translate(catalystApp, { question, loaded, history = [], person =
     const raw = await chat(
       catalystApp,
       [
-        { role: 'system', content: systemPrompt(loaded) },
+        { role: 'system', content: `${systemPrompt(loaded)}\n\nThe current time is '${time.istNaive()}' (Asia/Kolkata, the timezone every stored datetime is in).` },
         ...fewShot(loaded),
         ...turns,
         { role: 'user', content: `${String(question).slice(0, 1000)}${hint}` },
@@ -213,7 +240,7 @@ async function translate(catalystApp, { question, loaded, history = [], person =
 
     return {
       intent: ['read', 'clarify', 'refuse'].includes(parsed.intent) ? parsed.intent : 'clarify',
-      zcql: typeof parsed.zcql === 'string' ? parsed.zcql.trim() : '',
+      zcql: typeof parsed.zcql === 'string' ? dealias(parsed.zcql.trim()) : '',
       explanation: String(parsed.explanation ?? '').slice(0, 500),
       clarify_question: String(parsed.clarify_question ?? '').slice(0, 300),
       confidence: Number.isFinite(Number(parsed.confidence)) ? Number(parsed.confidence) : 0,

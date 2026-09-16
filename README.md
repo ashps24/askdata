@@ -26,30 +26,33 @@ catalyst deploy --org 876513394
 payloads for the MCP calls, derived from the packs so the Data Store schema and
 the guard's allow-list cannot drift apart.
 
-### What still needs you
+### Both engines are live
 
-One thing is blocked on an action only you can take. It does not stop the app
-working — every question in the Starters panel is answered today.
+The `quickmlcon` Connection is authorized and `GET /diag` reports
+`"ready": true`. Every answer carries an `engine` field:
 
-**The model translator needs a Connection only you can authorize.**
-Catalyst console → project **AskData** → **Connections** → create one named
-exactly **`quickmlcon`** with scope **`QuickML.deployment.READ`**, and
-authorize it. It cannot be created from the CLI or MCP: it needs an OAuth
-client secret and an interactive consent grant.
+- **`rules:<id>`** — one of the 55 reviewed, deterministic rules. Tried first,
+  always. Free, instant, and the same answer every time.
+- **`model`** — QuickML GLM (`crm-di-glm47b_30b_it`), reached only when no rule
+  matches, or when a rule matched on a few words but the question carries a
+  qualifier the rule ignores (`lib/rules.js` → `residual()`: rankings,
+  comparisons, per-group, a year, a status, a named value, a time window). "How
+  many contacts were created in 2026" matches the count-contacts rule; the
+  rule would answer 40, the model answers 17. Without this check, rules-first
+  gives a confident number for a different question.
+- If the model cannot help with a qualified question, the rule answers and the
+  summary opens with what it dropped: *Answered without "in 2026" - …*
 
-`ASKDATA_QUICKML_PROJECT_ID` is already pointed at `30663000000079001`
-(`tam-qbr`), the only project in this org where QuickML is enabled — GLM
-serving is provisioned per project, and AskData's own project is not one, so
-leaving it unset would 404 *after* the Connection started working and look
-like a broken Connection.
+Model output goes through the same guard as everything else (org scope, service
+scope, PII, no scans), plus two deterministic repairs for the mistakes it makes
+about one time in five despite being told not to: aggregate aliases in ORDER
+BY are folded back into the expression, and datetime literals are anchored to
+the current IST time the prompt now states.
 
-Check it at any time with `GET /diag`, which reports each step, what is still
-missing, and the exact next action — without printing any token material.
-Until the Connection exists every answer is labelled **`RULES`**, so nobody
-mistakes a pattern-matched answer for a translated one. Misspellings are still
-handled — `lib/spell.js` corrects against the schema's own lexicon before
-either engine runs, and is deliberately independent of the model for exactly
-this reason.
+Model calls take ~1.7-2.3 s end to end. `/diag` still reports the setup steps,
+should the Connection ever need re-authorizing (the state to look for is
+*"connection is not connected"* — it exists but the OAuth consent was not
+completed).
 
 ### Data: the Data Store is loaded
 
