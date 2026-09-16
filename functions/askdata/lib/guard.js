@@ -367,6 +367,36 @@ function compile(proposed, orgId, loaded) {
   const hasAggregate = AGGREGATE.test(masked);
   const hasGroupBy = findClause(masked, /GROUP\s+BY\b/).length > 0;
 
+  /* --- carry the ROWID that a reveal will need -------------------------- */
+  //
+  // Redacted values are revealed one row at a time, and /reveal addresses a row
+  // by table and ROWID. No rule ever selected ROWID, so an answer's redacted
+  // cells had nothing to reveal against - the Reveal control existed and could
+  // never work outside the data browser, which selects ROWID itself.
+  //
+  // Added here rather than in every rule: this is the one place that sees the
+  // finished projection. Only for a plain row read, and only when exactly one
+  // table in the query owns the PII being shown - with two, a row would have
+  // two ROWIDs and no way to tell which reveal belongs to which cell.
+  let revealTable = null;
+  if (!hasAggregate && !hasGroupBy) {
+    const owners = new Map();
+    for (const [qual, { table }] of qualifiers) {
+      const pii = loaded.pii[table];
+      if (!pii) continue;
+      const selected = Object.keys(pii).filter((col) =>
+        new RegExp(`\\b${qual}\\.${col}\\b`, 'i').test(selectList) || /^\*$/.test(selectList.trim()));
+      if (selected.length) owners.set(qual, table);
+    }
+    if (owners.size === 1) {
+      const [qual, table] = [...owners.entries()][0];
+      if (!new RegExp(`\\b${qual}\\.ROWID\\b`, 'i').test(selectList)) {
+        masked = masked.replace(selectList, `${qual}.ROWID, ${selectList}`);
+      }
+      revealTable = table;
+    }
+  }
+
   /* --- strip any ORG_ID predicate the model wrote ---------------------- */
   const wheres = findClause(masked, /WHERE\b/);
   if (wheres.length > 1) {
@@ -592,6 +622,7 @@ function compile(proposed, orgId, loaded) {
     qualifiers: Object.fromEntries([...qualifiers].map(([k, v]) => [k, v.table])),
     injected: scope,
     serviceScoped: serviceConjuncts.length > 0 ? service : null,
+    revealTable,
     limit,
     columnCount,
     hasAggregate,

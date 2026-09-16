@@ -14,13 +14,19 @@
  *   name  "Ashwin Prakash" -> "Ashwin P."   keeps the surname initial, which is
  *                                           what distinguishes two Ashwins in a
  *                                           clarify list (rule 4)
- *   email "a.p@northwind.com" -> "a•••@northwind.com"
- *                                           keeps the domain, so "is this the
- *                                           right company?" is still answerable
- *   phone "+91 98400 12345" -> "+91 ••••• •2345"
- *                                           keeps country code and last four,
- *                                           which is how a customer confirms a
- *                                           number over a call
+ *   email "a.p@northwind.com" -> "#REDACTED"
+ *   phone "+91 98400 12345"   -> "#REDACTED"
+ *
+ * Contact details are redacted outright rather than partially starred out.
+ * A row of "a•••••••••@northwind.example.com" reads as damage - the engineer
+ * squints at it, tries to reconstruct it, and cannot use it either way. A
+ * REDACTED label says plainly that there IS a value and that asking for it is
+ * a deliberate, logged act. In the client it is the button: click it and the
+ * real value replaces it, and that click writes an audit row.
+ *
+ * Names are the exception and stay partially masked. "Ashwin Prakash" ->
+ * "Ashwin P." is what lets an engineer tell two Ashwins apart in a clarify
+ * list, which is rule 4 working; redacting names would make that list useless.
  *
  * Aggregates are never masked: `COUNT(EMAIL)` contains no personal data, and
  * masking a number would just make the answer useless.
@@ -28,27 +34,15 @@
 
 const DOT = '•';
 
+/** The label a redacted value carries. The client turns it into the button. */
+const REDACTED = '#REDACTED';
+
 function maskEmail(value) {
-  const s = String(value);
-  const at = s.lastIndexOf('@');
-  if (at <= 0) return maskGeneric(s);
-  const local = s.slice(0, at);
-  const domain = s.slice(at);
-  const keep = local.slice(0, 1);
-  return `${keep}${DOT.repeat(Math.max(3, local.length - 1))}${domain}`;
+  return String(value) ? REDACTED : String(value);
 }
 
 function maskPhone(value) {
-  const s = String(value);
-  const digits = s.replace(/\D/g, '');
-  if (digits.length < 5) return DOT.repeat(s.length);
-
-  // Keep a country code when the number is written with one, plus the last 4.
-  const cc = s.trimStart().startsWith('+') ? digits.slice(0, digits.length > 10 ? digits.length - 10 : 0) : '';
-  const last4 = digits.slice(-4);
-  const hiddenCount = digits.length - cc.length - 4;
-  const head = cc ? `+${cc} ` : '';
-  return `${head}${DOT.repeat(Math.max(1, hiddenCount))} ${DOT}${last4}`.trim();
+  return String(value) ? REDACTED : String(value);
 }
 
 function maskName(value) {
@@ -123,4 +117,5 @@ function maskRows(rows, tables, loaded) {
   return { rows: out, masked: [...kinds.keys()] };
 }
 
-module.exports = { maskRows, maskValue, piiKindFor, maskEmail, maskPhone, maskName, DOT };
+module.exports = {
+  REDACTED, maskRows, maskValue, piiKindFor, maskEmail, maskPhone, maskName, DOT };

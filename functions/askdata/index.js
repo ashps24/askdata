@@ -751,8 +751,14 @@ app.post('/ask', async (req, res) => {
     /* -- 6. read, mask, describe --------------------------------------- */
     const result = await replica.read(catalystApp, org, compiled.zcql);
     const masked = mask.maskRows(result.rows, compiled.tables, loaded);
+
+    // ROWID rides along on each row so a redacted cell can be revealed, but it
+    // is not a field anyone asked to see - keep it out of the displayed columns
+    // and out of the shaper's view of the result.
+    const shownColumns = result.columns.filter((c) => c.toUpperCase() !== 'ROWID');
+
     const described = answer.build({
-      question: asked, rows: masked.rows, columns: result.columns,
+      question: asked, rows: masked.rows, columns: shownColumns,
       tables: compiled.tables, loaded, replica: result,
       // The rule that wrote the query is the most reliable statement of what
       // was asked. Shaping on columns alone once described an "active users"
@@ -767,8 +773,12 @@ app.post('/ask', async (req, res) => {
         zcql: compiled.zcql,
         engine,
         rows: masked.rows,
-        columns: result.columns,
+        columns: shownColumns,
         row_count: masked.rows.length,
+        // Which table a redacted cell belongs to, so the client knows where to
+        // send the reveal. Null when the answer cannot be revealed against a
+        // single row - an aggregate, or PII from two tables at once.
+        reveal_table: compiled.revealTable,
         summary: described.summary,
         ticket_comment: described.ticket_comment,
         highlights: described.highlights,

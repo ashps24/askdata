@@ -519,7 +519,7 @@ const SHAPERS = [
       const oldest = rows[rows.length - 1];
       return {
         summary:
-          `${fmtNumber(rows.length)} user${rows.length === 1 ? '' : 's'} have not logged in during that period` +
+          `${fmtNumber(rows.length)} ${rows.length === 1 ? 'user has' : 'users have'} not logged in during that period` +
           `${oldest?.LAST_LOGIN ? `, the longest since ${fmtDate(oldest.LAST_LOGIN)}` : ''}.`,
         ticket_comment:
           `Hi, I checked this at our end. ${fmtNumber(rows.length)} user${rows.length === 1 ? ' has' : 's have'} ` +

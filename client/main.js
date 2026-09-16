@@ -316,10 +316,35 @@ async function connect() {
 
 /* ------------------------------------------------------------------ rows */
 
-function cell(value, isPii) {
+const REDACTED = '#REDACTED';
+
+/**
+ * One cell.
+ *
+ * A redacted value is rendered as the button that reveals it, rather than as
+ * text with a Reveal control somewhere off at the end of the row. The thing
+ * you want is the thing you click, and each click asks for exactly that one
+ * field on that one row - which is also what gets written to the audit log.
+ *
+ * When the answer cannot be revealed - an aggregate, or PII drawn from two
+ * tables at once - the label stays as plain text, because a button that cannot
+ * do anything is worse than no button.
+ */
+function cell(value, isPii, reveal) {
   if (value === null || value === undefined || value === '') return h('td', { class: 'nil', text: 'null' });
   if (value === true) return h('td', { text: 'true' });
   if (value === false) return h('td', { text: 'false' });
+
+  if (isPii && String(value) === REDACTED) {
+    return h('td', { class: 'pii' }, reveal
+      ? h('button', {
+        class: 'redacted', type: 'button', text: REDACTED,
+        title: `Show this ${reveal.column.toLowerCase().replace(/_/g, ' ')} — logged against ticket ${state.ticket}`,
+        onclick: (e) => revealCell(e.currentTarget, reveal),
+      })
+      : h('span', { class: 'redacted is-locked', text: REDACTED, title: 'Reveal needs a single-row result' }));
+  }
+
   const num = typeof value === 'number' || (typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Number(value)));
   return h('td', { class: `${num ? 'num' : ''}${isPii ? ' pii' : ''}`.trim() || null, text: String(value) });
 }
@@ -335,21 +360,23 @@ function renderTable(result) {
 
   const flagged = new Map(highlights.map((x) => [x.row, x.why]));
   const shown = rows.slice(0, ROWS_SHOWN);
-  const canReveal = masked.length > 0 && result.tables?.length === 1;
+
+  // Which table a redacted cell belongs to. The server says so on an answer;
+  // in the data browser the table is the one being browsed.
+  const revealTable = result.reveal_table ?? (result.tables?.length === 1 ? result.tables[0] : null);
 
   const head = h('tr', {}, [
     ...columns.map((c) => h('th', { text: c.replace(/_/g, ' ').toLowerCase() })),
     flagged.size ? h('th', { text: 'note' }) : null,
-    canReveal ? h('th', { text: '' }) : null,
   ]);
 
   const body = shown.map((row, i) => h('tr', { class: flagged.has(i) ? 'flagged' : null }, [
-    ...columns.map((c) => cell(row[c], masked.includes(c))),
+    ...columns.map((c) => cell(
+      row[c],
+      masked.includes(c),
+      revealTable && row.ROWID ? { table: revealTable, rowId: row.ROWID, column: c } : null,
+    )),
     flagged.size ? h('td', {}, h('span', { class: 'why', text: flagged.get(i) ?? '' })) : null,
-    canReveal ? h('td', {}, h('button', {
-      class: 'reveal-btn', type: 'button', text: 'Reveal',
-      onclick: (e) => reveal(e.currentTarget, result.tables[0], row.ROWID, masked, row),
-    })) : null,
   ]));
 
   const grid = h('div', {},
@@ -357,11 +384,11 @@ function renderTable(result) {
     rows.length > shown.length
       ? h('p', { class: 'reveal-note', text: `Showing ${shown.length} of ${rows.length} rows.` })
       : null,
-    canReveal
-      ? h('p', { class: 'reveal-note', text: `${masked.join(', ')} masked. Revealing a row is logged against ticket ${state.ticket}.` })
-      : masked.length
-        ? h('p', { class: 'reveal-note', text: `${masked.join(', ')} masked. Reveal needs a single-table result.` })
-        : null
+    masked.length
+      ? h('p', { class: 'reveal-note', text: revealTable && shown.some((r) => r.ROWID)
+        ? `${masked.join(', ')} masked. Click a ${REDACTED} to show it — each click is logged against ticket ${state.ticket}.`
+        : `${masked.join(', ')} masked. This answer can't be revealed against a single row.` })
+      : null
   );
 
   // The summary is the answer; the grid is the evidence. A long list of rows
@@ -375,26 +402,30 @@ function renderTable(result) {
     grid);
 }
 
-async function reveal(button, table, rowId, columns, row) {
-  if (!rowId) { button.textContent = 'no row id'; return; }
+/**
+ * Reveal one field of one row, and replace the button with the value.
+ *
+ * Deliberately one cell per call: the audit row then records the field that
+ * was actually looked at, rather than "this row was opened".
+ */
+async function revealCell(button, { table, rowId, column }) {
   button.disabled = true;
+  const original = button.textContent;
   button.textContent = '…';
   try {
-    const r = await api('/reveal', { grant_token: state.token, table, row_id: String(rowId), columns });
-    const cells = [...button.closest('tr').querySelectorAll('td')];
-    const headers = [...button.closest('table').querySelectorAll('thead th')].map((t) => t.textContent);
-    for (const [col, value] of Object.entries(r.values)) {
-      const idx = headers.indexOf(col.replace(/_/g, ' ').toLowerCase());
-      if (idx >= 0 && cells[idx]) {
-        cells[idx].textContent = String(value);
-        cells[idx].classList.remove('nil');
-      }
-    }
-    button.textContent = 'logged';
+    const r = await api('/reveal', {
+      grant_token: state.token, table, row_id: String(rowId), columns: [column],
+    });
+    const value = r.values?.[column] ?? r.values?.[column.toUpperCase()];
+    const td = button.closest('td');
+    if (value === undefined) throw new Error('nothing returned for that field');
+    td.replaceChildren(h('span', { class: 'revealed', text: String(value) }));
     loadAudit();
   } catch (err) {
     button.disabled = false;
-    button.textContent = 'failed';
+    button.textContent = original;
+    button.classList.add('failed');
+    button.title = err.message;
     console.warn(err);
   }
 }
@@ -547,7 +578,9 @@ function renderClarify(card, result, question) {
       const pick = c.suggestion ?? result.suggestions?.[i];
       return h('div', { class: 'candidate' },
         h('b', { text: c.full_name ?? c.account_name ?? c.module ?? c.name ?? '—' }),
-        c.email ? h('span', { class: 'pii', text: c.email }) : null,
+        // A redacted email is identical on every candidate, so it tells you
+        // nothing about which person is which - the id and last login do.
+        c.email && c.email !== REDACTED ? h('span', { class: 'pii', text: c.email }) : null,
         c.last_login ? h('span', { class: 'dim small', text: `last login ${String(c.last_login).slice(0, 16)}` }) : null,
         c.status ? h('span', { class: 'dim small', text: c.status }) : null,
         c.product ? h('span', { class: 'dim small', text: c.product }) : null,
