@@ -1263,6 +1263,27 @@ function adminOk(req) {
  */
 const SEED_CSV_FOLDER = process.env.ASKDATA_SEED_FOLDER_ID || '30663000000140379';
 
+/**
+ * Can a bulk write job be created right now? One throwaway row into
+ * SupportQueryLog. Returns { ok, error } and never throws.
+ */
+async function bulkCanary(catalystApp) {
+  const fs = require('fs'); const os = require('os'); const path = require('path');
+  const tmp = path.join(os.tmpdir(), `canary-${Date.now()}.csv`);
+  try {
+    fs.writeFileSync(tmp,
+      'ORG_ID,LOG_ID,QUESTION,OUTCOME,GUARD_VERDICT,ROW_COUNT,LATENCY_MS,OCCURRED_AT\n' +
+      `"__canary__","canary-${Date.now()}","[bulk canary]","error","canary","0","0","2026-01-01 00:00:00"\n`, 'utf8');
+    const up = await catalystApp.filestore().folder(SEED_CSV_FOLDER).uploadFile({ code: fs.createReadStream(tmp), name: 'canary.csv' });
+    await catalystApp.datastore().table('SupportQueryLog').bulkJob('write').createJob(String(up.id), { operation: 'insert' });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  } finally {
+    try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+  }
+}
+
 /** RFC4180-ish: quote everything, double the quotes. Empty stays empty. */
 function csvCell(value) {
   if (value === null || value === undefined) return '';
@@ -1302,6 +1323,22 @@ app.post('/admin/bulk-seed', async (req, res) => {
     const tables = wanted ? [wanted] : Object.keys(built);
 
     const wipe = req.body?.wipe === true;
+
+    // NEVER wipe on a promise. This route once deleted the first table of every
+    // stage - Orgs included - because bulk write was refused for quota AFTER
+    // the wipe had already run. So before anything is deleted, a one-row
+    // canary job proves bulk write is accepted; if it is refused, nothing has
+    // been touched.
+    if (wipe) {
+      const canary = await bulkCanary(catalystApp);
+      if (!canary.ok) {
+        return res.status(409).json({
+          ok: false, wiped: 0,
+          error: `Refusing to seed: bulk write is not available (${canary.error}). Nothing was deleted.`,
+        });
+      }
+    }
+
     const results = [];
     for (const table of tables) {
       const rows = built[table];

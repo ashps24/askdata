@@ -28,11 +28,31 @@ const ORG_COLUMNS =
 /** Which Orgs column holds the org id a ticket for this service would quote. */
 const SERVICE_COLUMN = { crm: 'CRM_ORG_ID', campaigns: 'CMP_ORG_ID', desk: 'DESK_ORG_ID', directory: 'DIR_ORG_ID' };
 
+/**
+ * The customer registry when the Orgs TABLE is empty.
+ *
+ * The seed's ORGS is the same ten companies with the same ids - it is what the
+ * table was loaded from. Falling back to it means a wiped Orgs table stops
+ * being a total outage: connect still resolves, entitlements still check, and
+ * every table that does have rows still answers. Only used when the table
+ * returns nothing, and every response says so via `registry: 'seed'`.
+ */
+function registryFallback() {
+  try {
+    return require('./seed').ORGS.map((o) => ({
+      ORG_ID: o.ORG_ID, ZGID: o.ZGID, ORG_NAME: o.ORG_NAME, DC: o.DC, EDITION: o.EDITION,
+      SUBSCRIBED_PRODUCTS: o.SUBSCRIBED_PRODUCTS, STATUS: o.STATUS, SIGNED_UP_ON: o.SIGNED_UP_ON,
+      CRM_ORG_ID: o.CRM_ORG_ID, CMP_ORG_ID: o.CMP_ORG_ID, DESK_ORG_ID: o.DESK_ORG_ID, DIR_ORG_ID: o.DIR_ORG_ID,
+      registry: 'seed',
+    }));
+  } catch { return []; }
+}
+
 async function findOrgByZgid(catalystApp, zgid) {
   const result = await catalystApp.zcql().executeZCQLQuery(
     `SELECT ${ORG_COLUMNS} FROM Orgs WHERE ZGID = '${q(zgid)}' LIMIT 1`
   );
-  return flattenRows(result)[0] ?? null;
+  return flattenRows(result)[0] ?? registryFallback().find((o) => o.ZGID === String(zgid)) ?? null;
 }
 
 /**
@@ -50,14 +70,15 @@ async function findOrgByServiceId(catalystApp, service, serviceOrgId) {
   const result = await catalystApp.zcql().executeZCQLQuery(
     `SELECT ${ORG_COLUMNS} FROM Orgs WHERE ${column} = '${q(serviceOrgId)}' LIMIT 1`
   );
-  return flattenRows(result)[0] ?? null;
+  return flattenRows(result)[0] ?? registryFallback().find((o) => o[column] === String(serviceOrgId)) ?? null;
 }
 
 async function listOrgs(catalystApp) {
   const result = await catalystApp.zcql().executeZCQLQuery(
     `SELECT ${ORG_COLUMNS} FROM Orgs ORDER BY ORG_NAME LIMIT 0, 50`
   );
-  return flattenRows(result);
+  const rows = flattenRows(result);
+  return rows.length ? rows : registryFallback().sort((a, b) => a.ORG_NAME.localeCompare(b.ORG_NAME));
 }
 
 /* ------------------------------------------------------------- entitlement */
