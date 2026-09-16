@@ -25,7 +25,7 @@
  * comes from the grant, never from anything the caller sent.
  */
 
-const PACK_LABELS = { crm: 'Zoho CRM', campaigns: 'Zoho Campaigns', desk: 'Zoho Desk' };
+const PACK_LABELS = { crm: 'Zoho CRM', campaigns: 'Zoho Campaigns', desk: 'Zoho Desk', directory: 'Zoho Directory' };
 
 const { LIMITS } = require('./packs/types');
 

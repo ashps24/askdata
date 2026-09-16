@@ -61,7 +61,12 @@ curl -s -X POST "$BASE/admin/seed" -H 'x-askdata-admin: askdata-dev-admin-2026' 
 curl -s -X POST "$BASE/admin/provision-refs" -H 'x-askdata-admin: askdata-dev-admin-2026'
 ```
 
-That is ~5,158 inserts for all ten companies. The seeder probes with a single
+That is ~6,350 inserts for all ten companies across 44 tables - including the
+24 configuration tables (Desk email authentication, Guided Conversations,
+custom functions, assignment rules, help centers; Campaigns sender domains,
+journeys, forms, A/B tests; CRM workflow, assignment, blueprint, duplicate and
+sharing rules; and the Zoho Directory pack) which exist in the Data Store but
+hold no rows until this runs. The seeder probes with a single
 row first and **refuses to start if writes are unavailable**, because it wipes
 each table before refilling it — an earlier run lost four stages that way.
 

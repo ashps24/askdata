@@ -23,6 +23,7 @@ const ALL = [
   require('./crm'),
   require('./campaigns'),
   require('./desk'),
+  require('./directory'),
 ].map(normalisePack);
 
 const BY_KEY = new Map(ALL.map((p) => [p.key, p]));

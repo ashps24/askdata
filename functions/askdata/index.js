@@ -193,7 +193,7 @@ app.get('/orgs', async (req, res) => {
  * security event, because an engineer probing orgs they have no business in is
  * exactly what a review needs to see.
  */
-const SERVICES = ['crm', 'campaigns', 'desk'];
+const SERVICES = ['crm', 'campaigns', 'desk', 'directory'];
 
 app.post('/connect', async (req, res) => {
   const started = Date.now();
@@ -507,7 +507,7 @@ app.post('/ask', async (req, res) => {
     {
       const service = loaded.serviceKey && loaded.serviceKey !== 'all' ? loaded.serviceKey : null;
       const target = rules.permissionTarget(asked, service);
-      const label = { crm: 'Zoho CRM', campaigns: 'Zoho Campaigns', desk: 'Zoho Desk' };
+      const label = { crm: 'Zoho CRM', campaigns: 'Zoho Campaigns', desk: 'Zoho Desk', directory: 'Zoho Directory' };
       const isAccess = rules.accessQuestion(asked.toLowerCase(), { permission: target });
 
       // Unconditional. "Does Priya have lead create" has no capability word,

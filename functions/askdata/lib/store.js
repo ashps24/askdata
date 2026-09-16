@@ -23,10 +23,10 @@ const nowStamp = () => istNaive();
 
 const ORG_COLUMNS =
   'ORG_ID, ZGID, ORG_NAME, DC, EDITION, SUBSCRIBED_PRODUCTS, STATUS, SIGNED_UP_ON, ' +
-  'CRM_ORG_ID, CMP_ORG_ID, DESK_ORG_ID';
+  'CRM_ORG_ID, CMP_ORG_ID, DESK_ORG_ID, DIR_ORG_ID';
 
 /** Which Orgs column holds the org id a ticket for this service would quote. */
-const SERVICE_COLUMN = { crm: 'CRM_ORG_ID', campaigns: 'CMP_ORG_ID', desk: 'DESK_ORG_ID' };
+const SERVICE_COLUMN = { crm: 'CRM_ORG_ID', campaigns: 'CMP_ORG_ID', desk: 'DESK_ORG_ID', directory: 'DIR_ORG_ID' };
 
 async function findOrgByZgid(catalystApp, zgid) {
   const result = await catalystApp.zcql().executeZCQLQuery(

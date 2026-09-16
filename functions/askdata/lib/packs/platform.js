@@ -46,6 +46,7 @@ module.exports = {
         { name: 'CRM_ORG_ID', type: 'varchar', max_length: 32, indexed: true, describe: 'Org id on a CRM ticket' },
         { name: 'CMP_ORG_ID', type: 'varchar', max_length: 32, indexed: true, describe: 'Org id on a Campaigns ticket' },
         { name: 'DESK_ORG_ID', type: 'varchar', max_length: 32, indexed: true, describe: 'Portal id on a Desk ticket' },
+        { name: 'DIR_ORG_ID', type: 'varchar', max_length: 32, indexed: true, describe: 'Org id on a Directory ticket' },
         { name: 'STATUS', type: 'varchar', max_length: 20, values: ['active', 'trial', 'suspended'] },
         { name: 'SIGNED_UP_ON', type: 'date' },
       ],

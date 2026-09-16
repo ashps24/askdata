@@ -272,6 +272,8 @@ const MODULES = [
   ['lead', 'crm', 'Leads'], ['contact', 'crm', 'Contacts'],
   ['account', 'crm', 'Accounts'], ['deal', 'crm', 'Deals'],
   ['ticket', 'desk', 'Tickets'], ['department', 'desk', 'Departments'],
+  ['application', 'directory', 'Applications'], ['app', 'directory', 'Applications'],
+  ['policy', 'directory', 'Policies'], ['group', 'directory', 'Groups'],
 ];
 const ACTIONS = [
   ['create', 'create'], ['add', 'create'], ['make', 'create'], ['new', 'create'],
@@ -688,6 +690,218 @@ const RULES = [
     build: () => 'SELECT COUNT(ROWID) FROM CRM_Deals',
   },
 
+  /* -- configuration: what the admin has set up ------------------------- */
+  //
+  // The "before I reply, I want to know" questions. Each is a small
+  // configuration table read whole for one org; the guard permits it because
+  // the tables are declared listable.
+  {
+    id: 'desk-email-auth',
+    when: (q) => any('dmarc', 'dkim', 'spf', 'email authentication', 'domain authentication', 'sender authentication', 'email auth')(q)
+      && !any('campaign', 'sending domain', 'mailer', 'newsletter')(q),
+    build: () =>
+      'SELECT DESK_EmailConfig.SUPPORT_EMAIL, DESK_EmailConfig.SENDING_DOMAIN, DESK_EmailConfig.SPF_STATUS, ' +
+      'DESK_EmailConfig.DKIM_STATUS, DESK_EmailConfig.DMARC_STATUS, DESK_EmailConfig.DMARC_POLICY, ' +
+      'DESK_EmailConfig.LAST_VERIFIED_ON FROM DESK_EmailConfig ORDER BY DESK_EmailConfig.SUPPORT_EMAIL',
+  },
+  {
+    id: 'campaigns-sender-auth',
+    when: (q) => any('sending domain', 'sender domain', 'dedicated ip')(q)
+      || (any('dmarc', 'dkim', 'spf', 'authenticat')(q) && any('campaign', 'mailer', 'newsletter', 'sending')(q)),
+    build: () =>
+      'SELECT CMP_SenderDomains.DOMAIN_NAME, CMP_SenderDomains.SPF_STATUS, CMP_SenderDomains.DKIM_STATUS, ' +
+      'CMP_SenderDomains.DMARC_STATUS, CMP_SenderDomains.DEDICATED_IP, CMP_SenderDomains.VERIFIED_ON ' +
+      'FROM CMP_SenderDomains ORDER BY CMP_SenderDomains.IS_DEFAULT DESC',
+  },
+  {
+    id: 'desk-assignment-rules',
+    when: (q) => any('round robin', 'round-robin', 'skill based', 'skill-based', 'assignment rule', 'auto assign', 'auto-assign', 'ticket routing', 'load balanc')(q)
+      && !any('lead', 'deal', 'crm')(q),
+    build: () =>
+      'SELECT DESK_AssignmentRules.RULE_NAME, DESK_AssignmentRules.RULE_TYPE, DESK_AssignmentRules.STATUS, ' +
+      'DESK_Departments.DEPARTMENT_NAME, DESK_AssignmentRules.AGENT_COUNT, DESK_AssignmentRules.SKILLS, ' +
+      'DESK_AssignmentRules.TICKETS_ASSIGNED_30D FROM DESK_AssignmentRules ' +
+      'LEFT JOIN DESK_Departments ON DESK_AssignmentRules.DEPARTMENT_REF = DESK_Departments.ROWID ' +
+      'ORDER BY DESK_AssignmentRules.RULE_TYPE',
+  },
+  {
+    id: 'crm-assignment-rules',
+    when: (q) => any('assignment rule', 'round robin', 'round-robin', 'auto assign', 'lead routing', 'lead distribution')(q)
+      && any('lead', 'deal', 'crm', 'record')(q),
+    build: () =>
+      'SELECT CRM_AssignmentRules.RULE_NAME, CRM_AssignmentRules.MODULE, CRM_AssignmentRules.ROUND_ROBIN, ' +
+      'CRM_AssignmentRules.ASSIGN_TO, CRM_AssignmentRules.CRITERIA, CRM_AssignmentRules.STATUS, ' +
+      'CRM_AssignmentRules.RECORDS_ASSIGNED_30D FROM CRM_AssignmentRules ORDER BY CRM_AssignmentRules.MODULE',
+  },
+  {
+    id: 'desk-help-center',
+    when: (q) => any('portal', 'help center', 'help centre', 'helpcenter', 'knowledge base', 'self service', 'self-service', 'asap widget', 'community')(q),
+    build: () =>
+      'SELECT DESK_HelpCenters.HELP_CENTER_NAME, DESK_HelpCenters.STATUS, DESK_HelpCenters.ACCESS, ' +
+      'DESK_HelpCenters.PORTAL_URL, DESK_HelpCenters.KB_ARTICLES, DESK_HelpCenters.COMMUNITY_ENABLED, ' +
+      'DESK_HelpCenters.ASAP_ENABLED, DESK_HelpCenters.LAUNCHED_ON FROM DESK_HelpCenters',
+  },
+  {
+    id: 'desk-guided-conversations',
+    when: (q) => any('guided conversation', 'gc flow', 'chat flow', 'bot flow', 'decision tree', 'guided conv')(q),
+    build: () =>
+      'SELECT DESK_GuidedConversations.FLOW_NAME, DESK_GuidedConversations.STATUS, DESK_GuidedConversations.CHANNEL, ' +
+      'DESK_Departments.DEPARTMENT_NAME, DESK_GuidedConversations.BLOCK_COUNT, DESK_GuidedConversations.SESSIONS_30D, ' +
+      'DESK_GuidedConversations.MODIFIED_ON FROM DESK_GuidedConversations ' +
+      'LEFT JOIN DESK_Departments ON DESK_GuidedConversations.DEPARTMENT_REF = DESK_Departments.ROWID ' +
+      'ORDER BY DESK_GuidedConversations.SESSIONS_30D DESC',
+  },
+  {
+    id: 'desk-custom-functions',
+    when: (q) => any('custom function', 'deluge', 'function')(q) && !any('permission', 'can ', 'profile')(q),
+    build: (q) =>
+      'SELECT DESK_CustomFunctions.FUNCTION_NAME, DESK_CustomFunctions.TRIGGER_TYPE, DESK_CustomFunctions.LINKED_TO, ' +
+      'DESK_CustomFunctions.STATUS, DESK_CustomFunctions.EXECUTIONS_30D, DESK_CustomFunctions.FAILURES_30D, ' +
+      'DESK_CustomFunctions.LAST_ERROR, DESK_CustomFunctions.LAST_RUN_ON FROM DESK_CustomFunctions ' +
+      (any('fail', 'error', 'broken', 'not working')(q) ? "WHERE DESK_CustomFunctions.STATUS = 'error' " : '') +
+      'ORDER BY DESK_CustomFunctions.FAILURES_30D DESC',
+  },
+  {
+    id: 'desk-business-hours',
+    when: (q) => any('business hours', 'working hours', 'operating hours', 'holiday', 'support hours')(q),
+    build: () =>
+      'SELECT DESK_BusinessHours.SCHEDULE_NAME, DESK_BusinessHours.TIMEZONE, DESK_BusinessHours.WORKING_DAYS, ' +
+      'DESK_BusinessHours.START_TIME, DESK_BusinessHours.END_TIME, DESK_BusinessHours.HOLIDAYS_COUNT, ' +
+      'DESK_BusinessHours.IS_DEFAULT, DESK_BusinessHours.USED_BY_SLA FROM DESK_BusinessHours ORDER BY DESK_BusinessHours.IS_DEFAULT DESC',
+  },
+  {
+    id: 'desk-security-settings',
+    when: (q) => any('ip restriction', 'ip range', 'csp', 'field encryption', 'idle timeout', 'attachment control', 'security setting')(q)
+      && !any('directory', 'mfa', 'password policy')(q),
+    build: () =>
+      'SELECT DESK_SecuritySettings.SETTING_NAME, DESK_SecuritySettings.STATUS, DESK_SecuritySettings.SETTING_VALUE, ' +
+      'DESK_SecuritySettings.MODIFIED_ON FROM DESK_SecuritySettings ORDER BY DESK_SecuritySettings.SETTING_NAME',
+  },
+  {
+    id: 'desk-zia',
+    when: (q) => any('zia', 'sentiment', 'answer bot', 'auto tag', 'field prediction', 'ai feature', 'reply assistant')(q),
+    build: () =>
+      'SELECT DESK_ZiaSettings.FEATURE, DESK_ZiaSettings.STATUS, DESK_ZiaSettings.AI_PROVIDER, ' +
+      'DESK_ZiaSettings.DEPARTMENTS_COVERED, DESK_ZiaSettings.ENABLED_ON FROM DESK_ZiaSettings ORDER BY DESK_ZiaSettings.FEATURE',
+  },
+  {
+    id: 'workflow-rules',
+    when: (q) => any('workflow')(q) && !any('journey', 'campaign')(q),
+    build: (q, ctx) => {
+      const desk = ctx.loaded?.tableNames?.includes('DESK_WorkflowRules');
+      const crm = ctx.loaded?.tableNames?.includes('CRM_WorkflowRules');
+      const useDesk = desk && (!crm || any('ticket', 'desk', 'department')(q));
+      return useDesk
+        ? 'SELECT DESK_WorkflowRules.WORKFLOW_NAME, DESK_WorkflowRules.TRIGGER_ON, DESK_WorkflowRules.STATUS, ' +
+          'DESK_WorkflowRules.ACTION_TYPES, DESK_WorkflowRules.EXECUTIONS_30D, DESK_WorkflowRules.LAST_RUN_ON ' +
+          'FROM DESK_WorkflowRules ORDER BY DESK_WorkflowRules.EXECUTIONS_30D DESC'
+        : 'SELECT CRM_WorkflowRules.WORKFLOW_NAME, CRM_WorkflowRules.MODULE, CRM_WorkflowRules.TRIGGER_ON, ' +
+          'CRM_WorkflowRules.STATUS, CRM_WorkflowRules.ACTION_TYPES, CRM_WorkflowRules.EXECUTIONS_30D, ' +
+          'CRM_WorkflowRules.LAST_RUN_ON FROM CRM_WorkflowRules ORDER BY CRM_WorkflowRules.EXECUTIONS_30D DESC';
+    },
+  },
+  {
+    id: 'crm-duplicate-rules',
+    when: (q) => any('duplicate', 'dedupe', 'dedup', 'find and merge')(q) && !any('created', 'when were')(q),
+    build: () =>
+      'SELECT CRM_DuplicateRules.MODULE, CRM_DuplicateRules.MATCH_FIELDS, CRM_DuplicateRules.ACTION_ON_DUPLICATE, ' +
+      'CRM_DuplicateRules.STATUS, CRM_DuplicateRules.DUPLICATES_FOUND_LAST_RUN, CRM_DuplicateRules.LAST_RUN_ON ' +
+      'FROM CRM_DuplicateRules ORDER BY CRM_DuplicateRules.MODULE',
+  },
+  {
+    id: 'crm-blueprints',
+    when: (q) => any('blueprint', 'sales process', 'stage transition')(q),
+    build: () =>
+      'SELECT CRM_Blueprints.BLUEPRINT_NAME, CRM_Blueprints.MODULE, CRM_Blueprints.STATUS, CRM_Blueprints.STATES, ' +
+      'CRM_Blueprints.TRANSITIONS, CRM_Blueprints.RECORDS_IN_PROCESS, CRM_Blueprints.MODIFIED_ON FROM CRM_Blueprints',
+  },
+  {
+    id: 'crm-sharing-rules',
+    when: (q) => any('sharing rule', 'data sharing', 'record sharing', 'sharing setting')(q),
+    build: () =>
+      'SELECT CRM_SharingRules.RULE_NAME, CRM_SharingRules.MODULE, CRM_SharingRules.SHARE_FROM, CRM_SharingRules.SHARE_TO, ' +
+      'CRM_SharingRules.ACCESS_LEVEL, CRM_SharingRules.STATUS FROM CRM_SharingRules ORDER BY CRM_SharingRules.MODULE',
+  },
+  {
+    id: 'campaigns-journeys',
+    when: (q) => any('journey', 'automation', 'autoresponder', 'drip', 'automated series', 'automated workflow')(q) && !any('desk', 'ticket', 'crm rule')(q),
+    build: (q) =>
+      'SELECT CMP_Journeys.JOURNEY_NAME, CMP_Journeys.STATUS, CMP_Journeys.TRIGGER_TYPE, CMP_Lists.LIST_NAME, ' +
+      'CMP_Journeys.STEPS, CMP_Journeys.CONTACTS_IN_JOURNEY, CMP_Journeys.MODIFIED_ON FROM CMP_Journeys ' +
+      'LEFT JOIN CMP_Lists ON CMP_Journeys.LIST_REF = CMP_Lists.ROWID ' +
+      (any('active', 'running', 'live')(q) ? "WHERE CMP_Journeys.STATUS = 'active' " : '') +
+      'ORDER BY CMP_Journeys.CONTACTS_IN_JOURNEY DESC',
+  },
+  {
+    id: 'campaigns-signup-forms',
+    when: (q) => any('signup form', 'sign up form', 'sign-up form', 'popup form', 'pop-up form', 'subscribe form', 'embedded form', 'forms')(q),
+    build: () =>
+      'SELECT CMP_SignupForms.FORM_NAME, CMP_SignupForms.FORM_TYPE, CMP_Lists.LIST_NAME, CMP_SignupForms.STATUS, ' +
+      'CMP_SignupForms.DOUBLE_OPT_IN, CMP_SignupForms.SUBMISSIONS_30D FROM CMP_SignupForms ' +
+      'LEFT JOIN CMP_Lists ON CMP_SignupForms.LIST_REF = CMP_Lists.ROWID ORDER BY CMP_SignupForms.SUBMISSIONS_30D DESC',
+  },
+  {
+    id: 'campaigns-ab-tests',
+    when: (q) => any('a/b test', 'ab test', 'a b test', 'split test', 'subject line test')(q),
+    build: () =>
+      'SELECT CMP_Campaigns.CAMPAIGN_NAME, CMP_AbTests.TEST_TYPE, CMP_AbTests.VARIANT_A_OPEN_RATE, ' +
+      'CMP_AbTests.VARIANT_B_OPEN_RATE, CMP_AbTests.WINNER, CMP_AbTests.SAMPLE_SIZE, CMP_AbTests.COMPLETED_ON ' +
+      'FROM CMP_AbTests INNER JOIN CMP_Campaigns ON CMP_AbTests.CAMPAIGN_REF = CMP_Campaigns.ROWID ' +
+      'ORDER BY CMP_AbTests.COMPLETED_ON DESC',
+  },
+  {
+    id: 'campaigns-topics',
+    when: (q) => any('topic', 'frequency cap', 'subscription preference')(q),
+    build: () =>
+      'SELECT CMP_Topics.TOPIC_NAME, CMP_Topics.SUBSCRIBERS, CMP_Topics.FREQUENCY_CAP_PER_WEEK, CMP_Topics.STATUS ' +
+      'FROM CMP_Topics ORDER BY CMP_Topics.SUBSCRIBERS DESC',
+  },
+
+  /* -- directory ---------------------------------------------------------- */
+  {
+    id: 'directory-security-policies',
+    about: 'access',
+    when: (q) => any('security polic', 'password policy', 'mfa', 'multi factor', 'multi-factor', 'two factor', '2fa', 'session policy', 'ip restriction')(q)
+      && !any('desk', 'ticket')(q),
+    build: () =>
+      'SELECT DIR_SecurityPolicies.POLICY_NAME, DIR_SecurityPolicies.POLICY_TYPE, DIR_SecurityPolicies.STATUS, ' +
+      'DIR_SecurityPolicies.APPLIES_TO, DIR_SecurityPolicies.SETTINGS, DIR_SecurityPolicies.MODIFIED_ON ' +
+      'FROM DIR_SecurityPolicies ORDER BY DIR_SecurityPolicies.POLICY_TYPE',
+  },
+  {
+    id: 'directory-tenant',
+    when: (q) => any('tenant', 'connected to', 'directory store', 'synced from', 'sync source', 'active directory', 'azure ad', 'verified domain')(q),
+    build: () =>
+      'SELECT DIR_Domains.DOMAIN_NAME, DIR_Domains.VERIFICATION_STATUS, DIR_Domains.TENANT_NAME, DIR_Domains.TENANT_ID, ' +
+      'DIR_Domains.SYNC_SOURCE, DIR_Domains.IS_PRIMARY FROM DIR_Domains ORDER BY DIR_Domains.IS_PRIMARY DESC',
+  },
+  {
+    id: 'directory-user-apps',
+    about: 'access',
+    when: (q, ctx) => Boolean(ctx.person) && any('app', 'application', 'part of', 'access to', 'assigned to')(q),
+    build: (q, ctx) =>
+      'SELECT DIR_Applications.APP_NAME, DIR_Applications.APP_TYPE, DIR_UserApplications.ROLE_IN_APP, ' +
+      'DIR_UserApplications.STATUS, DIR_UserApplications.LAST_ACCESSED FROM DIR_UserApplications ' +
+      'INNER JOIN DIR_Applications ON DIR_UserApplications.APP_REF = DIR_Applications.ROWID ' +
+      `WHERE DIR_UserApplications.USER_ID = ${lit(ctx.person.USER_ID)} ORDER BY DIR_UserApplications.LAST_ACCESSED DESC`,
+  },
+  {
+    id: 'directory-applications',
+    when: (q) => any('application', 'apps', 'sso', 'single sign', 'provisioning', 'scim')(q),
+    build: () =>
+      'SELECT DIR_Applications.APP_NAME, DIR_Applications.APP_TYPE, DIR_Applications.SSO_ENABLED, ' +
+      'DIR_Applications.PROVISIONING, DIR_Applications.ASSIGNED_USERS, DIR_Applications.STATUS ' +
+      'FROM DIR_Applications ORDER BY DIR_Applications.ASSIGNED_USERS DESC',
+  },
+  {
+    id: 'directory-groups',
+    when: (q) => any('directory group', 'collaboration group', 'groups in directory', 'org chart')(q)
+      || (any('group')(q) && !any('by ', 'permission', 'department')(q)),
+    build: () =>
+      'SELECT DIR_Groups.GROUP_NAME, DIR_Groups.GROUP_TYPE, DIR_Groups.MEMBER_COUNT, Users.FULL_NAME, DIR_Groups.CREATED_ON ' +
+      'FROM DIR_Groups LEFT JOIN Users ON DIR_Groups.OWNER_REF = Users.ROWID ORDER BY DIR_Groups.GROUP_TYPE',
+  },
+
   /* -- campaigns --------------------------------------------------------- */
   {
     id: 'list-segments',
@@ -854,11 +1068,32 @@ function suggestionsFor(loaded) {
       'which users can create leads'
     );
   }
+  if (loaded.productKeys.includes('crm')) {
+    out.push('is there a duplicate rule on leads', 'which workflow rules are active');
+  }
   if (loaded.productKeys.includes('campaigns')) {
-    out.push('can <user> create a segment in campaigns', 'list the segments');
+    out.push(
+      'can <user> create a segment in campaigns', 'list the segments',
+      'is the sending domain authenticated', 'which journeys are active'
+    );
   }
   if (loaded.productKeys.includes('desk')) {
-    out.push('which departments is <user> in', 'how many open tickets per department');
+    out.push(
+      'has dmarc been configured',
+      'is there a round robin assignment rule set up',
+      'is the customer portal in use',
+      'which guided conversation flows are published',
+      'are any custom functions failing',
+      'which departments is <user> in', 'how many open tickets per department'
+    );
+  }
+  if (loaded.productKeys.includes('directory')) {
+    out.push(
+      'have security policies been configured',
+      'which tenant is this org connected to',
+      'is <user> part of any apps',
+      'which apps have sso enabled'
+    );
   }
   out.push(
     'which users have been active in the last one month',

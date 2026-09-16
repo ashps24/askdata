@@ -587,12 +587,25 @@ const GENERIC = {
   build: ({ rows, columns, tables, loaded }) => {
     const noun = nounFor(tables, loaded, rows.length);
     if (!rows.length) {
-      return {
-        summary: `No ${noun} match that.`,
-        ticket_comment:
-          'Hi, I checked this at our end and could not find any records matching that ' +
-          'description. Could you confirm the exact record id or name you are looking at?',
-      };
+      // A configuration table read whole ("has DMARC been configured") with
+      // zero rows is NOT a "no" - it means nothing is recorded for this
+      // customer, which is what the sentence has to say. "No support email
+      // configurations match that" reads as "DMARC is not set up", a confident
+      // claim the data cannot support.
+      const config = tables.every((t) => loaded.byTable.get(t)?.listable);
+      return config
+        ? {
+          summary: `No ${noun} are recorded for this customer.`,
+          ticket_comment:
+            `Hi, I checked this at our end and there are no ${noun} recorded on the account ` +
+            'yet. If you expected some, let us know and we will look into how they were set up.',
+        }
+        : {
+          summary: `No ${noun} match that.`,
+          ticket_comment:
+            'Hi, I checked this at our end and could not find any records matching that ' +
+            'description. Could you confirm the exact record id or name you are looking at?',
+        };
     }
     const label = labelColumn(columns);
     if (label && rows.length <= 12) {

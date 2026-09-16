@@ -81,20 +81,20 @@ if (ASHWIN_P > USERS_PER_ORG || ASHWIN_M > USERS_PER_ORG) {
  * neighbours), so every entitlement, audit row and saved link still resolves.
  */
 const COMPANY_SPECS = [
-  ['ORG-NORTHWIND', 'Northwind Traders',    'in',  'Enterprise',   'crm,campaigns,desk', '2021-03-01', 100],
+  ['ORG-NORTHWIND', 'Northwind Traders',    'in',  'Enterprise',   'crm,campaigns,desk,directory', '2021-03-01', 100],
   ['ORG-CONTOSO',   'Contoso Ltd',          'com', 'Professional', 'crm,campaigns',      '2022-07-14', 40],
-  ['ORG-FABRIKAM',  'Fabrikam Inc',         'eu',  'Enterprise',   'crm,desk',           '2020-11-02', 40],
-  ['ORG-ZYLKER',    'Zylker Corp',          'in',  'Enterprise',   'crm,campaigns,desk', '2019-06-18', 90],
-  ['ORG-ACME',      'Acme Retail Group',    'com', 'Enterprise',   'crm,desk',           '2021-09-30', 70],
+  ['ORG-FABRIKAM',  'Fabrikam Inc',         'eu',  'Enterprise',   'crm,desk,directory', '2020-11-02', 40],
+  ['ORG-ZYLKER',    'Zylker Corp',          'in',  'Enterprise',   'crm,campaigns,desk,directory', '2019-06-18', 90],
+  ['ORG-ACME',      'Acme Retail Group',    'com', 'Enterprise',   'crm,desk,directory', '2021-09-30', 70],
   ['ORG-VERTEX',    'Vertex Financial',     'au',  'Professional', 'crm',                '2023-01-11', 50],
-  ['ORG-HELIOS',    'Helios Manufacturing', 'jp',  'Enterprise',   'crm,campaigns,desk', '2018-04-05', 80],
+  ['ORG-HELIOS',    'Helios Manufacturing', 'jp',  'Enterprise',   'crm,campaigns,desk,directory', '2018-04-05', 80],
   ['ORG-MERIDIAN',  'Meridian Healthcare',  'ca',  'Professional', 'crm,desk',           '2022-02-22', 45],
   ['ORG-SOLSTICE',  'Solstice Media',       'eu',  'Standard',     'crm,campaigns',      '2023-08-07', 35],
-  ['ORG-IRONCLAD',  'Ironclad Logistics',   'uae', 'Enterprise',   'crm,campaigns,desk', '2020-01-20', 60],
+  ['ORG-IRONCLAD',  'Ironclad Logistics',   'uae', 'Enterprise',   'crm,campaigns,desk,directory', '2020-01-20', 60],
 ];
 
 /** Distinct number space per service, so an id says which service it belongs to. */
-const SERVICE_PREFIX = { crm: '600218', campaigns: '700315', desk: '800427' };
+const SERVICE_PREFIX = { crm: '600218', campaigns: '700315', desk: '800427', directory: '900531' };
 
 const ORGS = COMPANY_SPECS.map(
   ([ORG_ID, ORG_NAME, DC, EDITION, SUBSCRIBED_PRODUCTS, SIGNED_UP_ON, leads], i) => {
@@ -113,6 +113,7 @@ const ORGS = COMPANY_SPECS.map(
       CRM_ORG_ID: serviceOrgIds.crm ?? null,
       CMP_ORG_ID: serviceOrgIds.campaigns ?? null,
       DESK_ORG_ID: serviceOrgIds.desk ?? null,
+      DIR_ORG_ID: serviceOrgIds.directory ?? null,
       serviceOrgIds,
       index: i + 1,
       seed: 1001 + i * 1001,
@@ -176,6 +177,7 @@ const PERMISSION_MATRIX = {
   crm: { Leads: ['view', 'create', 'edit', 'delete', 'export'], Contacts: ['view', 'create', 'edit', 'delete', 'export'], Accounts: ['view', 'create', 'edit', 'delete'], Deals: ['view', 'create', 'edit', 'delete', 'approve'] },
   campaigns: { Lists: ['view', 'create', 'edit', 'delete'], Segments: ['view', 'create', 'edit', 'delete'], Campaigns: ['view', 'create', 'edit', 'share'] },
   desk: { Tickets: ['view', 'create', 'edit', 'delete', 'share'], Departments: ['view', 'create', 'edit'] },
+  directory: { Applications: ['view', 'create', 'edit', 'delete'], Policies: ['view', 'edit'], Groups: ['view', 'create', 'edit', 'delete'] },
 };
 
 /** Six profiles per product, from most to least privileged. */
@@ -183,6 +185,7 @@ const PROFILE_SETS = {
   crm: ['Administrator', 'Sales Manager', 'Sales Executive', 'Marketing Executive', 'Support Read Only', 'Intern'],
   campaigns: ['Administrator', 'Campaign Manager', 'Marketing Executive', 'Content Editor', 'Analyst', 'Intern'],
   desk: ['Administrator', 'Support Manager', 'Senior Agent', 'Agent', 'Light Agent', 'Intern'],
+  directory: ['Administrator', 'Security Admin', 'User Admin', 'Help Desk Admin', 'Auditor', 'Intern'],
 };
 
 /** How much of the catalog each profile rank gets. */
@@ -212,6 +215,7 @@ function buildPlatform() {
       EDITION: org.EDITION, SUBSCRIBED_PRODUCTS: org.SUBSCRIBED_PRODUCTS,
       STATUS: org.STATUS, SIGNED_UP_ON: org.SIGNED_UP_ON,
       CRM_ORG_ID: org.CRM_ORG_ID, CMP_ORG_ID: org.CMP_ORG_ID, DESK_ORG_ID: org.DESK_ORG_ID,
+      DIR_ORG_ID: org.DIR_ORG_ID,
     });
 
     // The engineer holds an open ticket for every org, plus one elevated grant
@@ -656,12 +660,396 @@ function buildAudit() {
 
 /* --------------------------------------------------------------- writing */
 
+
+/* -------------------------------------------- configuration tables */
+//
+// What an admin has SET UP, as opposed to the records the org accumulates.
+// These are the tables behind "before I reply, I want to know" - has DMARC
+// been configured, is there a round robin rule, is the portal in use, are
+// security policies enforced. A handful of rows per customer, deliberately
+// varied so the same question has different honest answers in different orgs.
+
+const subscribed = (product) => ORGS.filter((o) => o.SUBSCRIBED_PRODUCTS.split(',').includes(product));
+const uidFor = (org) => (n) => `U-${org.index}0${String(n).padStart(2, '0')}`;
+const idFor = (org, tag) => (n) => `${tag}-${org.index}${String(n).padStart(2, '0')}`;
+
+function buildDeskConfig() {
+  const out = {
+    DESK_EmailConfig: [], DESK_GuidedConversations: [], DESK_CustomFunctions: [],
+    DESK_AssignmentRules: [], DESK_BusinessHours: [], DESK_HelpCenters: [],
+    DESK_WorkflowRules: [], DESK_SecuritySettings: [], DESK_ZiaSettings: [],
+  };
+  const departments = buildDesk().DESK_Departments;
+
+  for (const org of subscribed('desk')) {
+    const r = rng(org.seed + 41);
+    const uid = uidFor(org);
+    const depts = departments.filter((d) => d.ORG_ID === org.ORG_ID);
+    const dept = (i) => depts[i % depts.length].DEPARTMENT_ID;
+    const slug = org.ORG_NAME.split(' ')[0].toLowerCase();
+    const domain = `${slug}.example.com`;
+
+    // Email authentication. Northwind is fully set up; Fabrikam has never
+    // configured DMARC - so "has DMARC been configured" has a real no.
+    const dmarcDone = org.ORG_ID !== 'ORG-FABRIKAM' && org.ORG_ID !== 'ORG-MERIDIAN';
+    for (let i = 1; i <= Math.min(3, depts.length); i++) {
+      out.DESK_EmailConfig.push({
+        ORG_ID: org.ORG_ID, EMAIL_CONFIG_ID: idFor(org, 'EC')(i),
+        SUPPORT_EMAIL: `${['support', 'billing', 'help'][i - 1]}@${domain}`,
+        DEPARTMENT_ID: dept(i - 1), SENDING_DOMAIN: domain,
+        SPF_STATUS: 'verified',
+        DKIM_STATUS: dmarcDone || i === 1 ? 'verified' : 'pending',
+        DMARC_STATUS: dmarcDone ? 'verified' : 'not_configured',
+        DMARC_POLICY: dmarcDone ? pick(r, ['quarantine', 'reject', 'none']) : 'not_set',
+        LAST_VERIFIED_ON: dmarcDone ? ago(int(r, 5, 200), int(r, 9, 17), 0) : null,
+      });
+    }
+
+    for (let i = 1; i <= 3; i++) {
+      out.DESK_GuidedConversations.push({
+        ORG_ID: org.ORG_ID, FLOW_ID: idFor(org, 'GC')(i),
+        FLOW_NAME: ['Password reset helper', 'Billing enquiry triage', 'Return an order'][i - 1],
+        DEPARTMENT_ID: dept(i), STATUS: i === 3 ? 'draft' : 'published',
+        CHANNEL: pick(r, ['help_center', 'asap', 'web_widget', 'whatsapp']),
+        BLOCK_COUNT: int(r, 6, 24), SESSIONS_30D: i === 3 ? 0 : int(r, 40, 900),
+        CREATED_BY: uid(int(r, 1, org.users)), MODIFIED_ON: ago(int(r, 2, 120), int(r, 9, 18), 0),
+      });
+    }
+
+    for (let i = 1; i <= 4; i++) {
+      const failing = i === 4;
+      out.DESK_CustomFunctions.push({
+        ORG_ID: org.ORG_ID, FUNCTION_ID: idFor(org, 'CF')(i),
+        FUNCTION_NAME: ['notifySlackOnEscalation', 'syncTicketToCRM', 'autoCloseResolved', 'pushInvoiceToBooks'][i - 1],
+        TRIGGER_TYPE: pick(r, ['workflow', 'workflow', 'schedule', 'blueprint']),
+        LINKED_TO: ['Escalation alert', 'CRM sync workflow', 'Nightly cleanup', 'Invoice on close'][i - 1],
+        STATUS: failing ? 'error' : 'active',
+        EXECUTIONS_30D: int(r, 20, 1200), FAILURES_30D: failing ? int(r, 15, 80) : int(r, 0, 2),
+        LAST_ERROR: failing ? 'HTTP 401 from Books API: token expired' : null,
+        LAST_RUN_ON: ago(int(r, 0, 3), int(r, 0, 23), int(r, 0, 59)),
+        CREATED_BY: uid(int(r, 1, org.users)),
+      });
+    }
+
+    // Northwind and Zylker run round robin; Acme is skill based; the rest
+    // have a direct rule only - so "is there a round robin rule" varies.
+    const rr = ['ORG-NORTHWIND', 'ORG-ZYLKER', 'ORG-HELIOS'].includes(org.ORG_ID);
+    const skill = ['ORG-ACME', 'ORG-IRONCLAD'].includes(org.ORG_ID);
+    out.DESK_AssignmentRules.push({
+      ORG_ID: org.ORG_ID, RULE_ID: idFor(org, 'AR')(1),
+      RULE_NAME: rr ? 'Round robin - Billing' : skill ? 'Skill routing - Technical' : 'Direct to manager',
+      DEPARTMENT_ID: dept(rr ? 0 : 1),
+      RULE_TYPE: rr ? 'round_robin' : skill ? 'skill_based' : 'direct', STATUS: 'active',
+      CRITERIA: rr ? 'Channel is Email and Department is Billing' : skill ? 'Category is Technical' : 'All tickets',
+      SKILLS: skill ? 'API, Integrations, Data migration' : null,
+      AGENT_COUNT: rr ? int(r, 4, 9) : skill ? int(r, 3, 6) : 1,
+      TICKETS_ASSIGNED_30D: int(r, 60, 700), CREATED_ON: ago(int(r, 90, 700)),
+    });
+    out.DESK_AssignmentRules.push({
+      ORG_ID: org.ORG_ID, RULE_ID: idFor(org, 'AR')(2), RULE_NAME: 'VIP accounts to seniors',
+      DEPARTMENT_ID: dept(2), RULE_TYPE: 'load_balanced', STATUS: pick(r, ['active', 'inactive']),
+      CRITERIA: 'Account tier is Enterprise', SKILLS: null, AGENT_COUNT: int(r, 2, 4),
+      TICKETS_ASSIGNED_30D: int(r, 5, 90), CREATED_ON: ago(int(r, 30, 400)),
+    });
+
+    out.DESK_BusinessHours.push({
+      ORG_ID: org.ORG_ID, SCHEDULE_ID: idFor(org, 'BH')(1), SCHEDULE_NAME: 'Standard support hours',
+      TIMEZONE: { in: 'Asia/Kolkata', com: 'America/New_York', eu: 'Europe/Berlin', au: 'Australia/Sydney', jp: 'Asia/Tokyo', ca: 'America/Toronto', sa: 'America/Sao_Paulo', uae: 'Asia/Dubai' }[org.DC] ?? 'UTC',
+      WORKING_DAYS: 'Mon-Fri', START_TIME: '09:00', END_TIME: '18:00',
+      HOLIDAYS_COUNT: int(r, 6, 14), IS_DEFAULT: B(true), USED_BY_SLA: B(true),
+    });
+    if (org.EDITION === 'Enterprise') {
+      out.DESK_BusinessHours.push({
+        ORG_ID: org.ORG_ID, SCHEDULE_ID: idFor(org, 'BH')(2), SCHEDULE_NAME: '24x7 Enterprise',
+        TIMEZONE: 'UTC', WORKING_DAYS: 'Mon-Sun', START_TIME: '00:00', END_TIME: '23:59',
+        HOLIDAYS_COUNT: 0, IS_DEFAULT: B(false), USED_BY_SLA: B(true),
+      });
+    }
+
+    // The portal question: live for most, but Meridian never launched theirs.
+    const portalLive = org.ORG_ID !== 'ORG-MERIDIAN';
+    out.DESK_HelpCenters.push({
+      ORG_ID: org.ORG_ID, HELP_CENTER_ID: idFor(org, 'HC')(1),
+      HELP_CENTER_NAME: `${org.ORG_NAME} Help Center`, PORTAL_URL: `https://help.${domain}`,
+      STATUS: portalLive ? 'live' : 'draft', ACCESS: pick(r, ['public', 'login_required']),
+      KB_ARTICLES: portalLive ? int(r, 40, 600) : int(r, 0, 12),
+      COMMUNITY_ENABLED: B(portalLive && r() > 0.5), ASAP_ENABLED: B(portalLive && r() > 0.3),
+      CUSTOM_DOMAIN: B(org.EDITION === 'Enterprise'), THEME: pick(r, ['Elegant', 'Bold', 'Classic', 'Minimal']),
+      LAUNCHED_ON: portalLive ? day(ago(int(r, 100, 900))) : null,
+    });
+
+    for (let i = 1; i <= 4; i++) {
+      out.DESK_WorkflowRules.push({
+        ORG_ID: org.ORG_ID, WORKFLOW_ID: idFor(org, 'WF')(i),
+        WORKFLOW_NAME: ['Escalate unanswered after 4h', 'Tag billing tickets', 'Notify manager on Urgent', 'Close after 7 days idle'][i - 1],
+        DEPARTMENT_ID: dept(i), MODULE: 'Tickets',
+        TRIGGER_ON: ['time_based', 'create', 'create_or_update', 'time_based'][i - 1],
+        STATUS: i === 2 ? 'inactive' : 'active',
+        ACTION_TYPES: ['Email alert, Custom function', 'Field update', 'Email alert', 'Field update, Custom function'][i - 1],
+        EXECUTIONS_30D: int(r, 10, 900), LAST_RUN_ON: ago(int(r, 0, 6), int(r, 0, 23), 0),
+      });
+    }
+
+    const secNames = ['IP range restriction', 'CSP policy header', 'Field encryption', 'System field encryption', 'Agent idle timeout', 'Attachment controls'];
+    secNames.forEach((name, i) => {
+      const on = org.EDITION === 'Enterprise' ? i !== 1 : i === 4;
+      out.DESK_SecuritySettings.push({
+        ORG_ID: org.ORG_ID, SETTING_ID: idFor(org, 'SS')(i + 1), SETTING_NAME: name,
+        STATUS: on ? 'enabled' : 'disabled',
+        SETTING_VALUE: on ? ['10.0.0.0/8, 203.0.113.0/24', "default-src 'self'", '3 fields', '2 fields', '30 minutes', 'Block .exe .js .bat'][i] : null,
+        MODIFIED_BY: uid(int(r, 1, 3)), MODIFIED_ON: ago(int(r, 10, 500), int(r, 9, 18), 0),
+      });
+    });
+
+    const zia = ['Field predictions', 'Answer bot', 'Sentiment analysis', 'Ticket auto tags', 'Reply assistant', 'Anomaly detection'];
+    zia.forEach((feature, i) => {
+      const on = org.EDITION === 'Enterprise' && i < 4;
+      out.DESK_ZiaSettings.push({
+        ORG_ID: org.ORG_ID, ZIA_SETTING_ID: idFor(org, 'ZS')(i + 1), FEATURE: feature,
+        STATUS: on ? (i === 0 ? 'training' : 'enabled') : 'disabled',
+        AI_PROVIDER: on ? pick(r, ['native', 'native', 'byok_openai']) : null,
+        DEPARTMENTS_COVERED: on ? int(r, 1, depts.length) : 0,
+        ENABLED_ON: on ? ago(int(r, 20, 400)) : null,
+      });
+    });
+  }
+  return out;
+}
+
+function buildCampaignsConfig() {
+  const out = { CMP_SenderDomains: [], CMP_Journeys: [], CMP_SignupForms: [], CMP_AbTests: [], CMP_Topics: [] };
+  const base = buildCampaigns();
+
+  for (const org of subscribed('campaigns')) {
+    const r = rng(org.seed + 43);
+    const uid = uidFor(org);
+    const lists = base.CMP_Lists.filter((l) => l.ORG_ID === org.ORG_ID);
+    const campaigns = base.CMP_Campaigns.filter((c) => c.ORG_ID === org.ORG_ID);
+    const slug = org.ORG_NAME.split(' ')[0].toLowerCase();
+
+    // Solstice sends from an unauthenticated domain - the deliverability case.
+    const authed = org.ORG_ID !== 'ORG-SOLSTICE';
+    out.CMP_SenderDomains.push({
+      ORG_ID: org.ORG_ID, DOMAIN_ID: idFor(org, 'SD')(1), DOMAIN_NAME: `mail.${slug}.example.com`,
+      SPF_STATUS: authed ? 'verified' : 'failed', DKIM_STATUS: authed ? 'verified' : 'not_configured',
+      DMARC_STATUS: authed ? pick(r, ['verified', 'pending']) : 'not_configured',
+      DEDICATED_IP: B(org.EDITION === 'Enterprise'), IS_DEFAULT: B(true),
+      VERIFIED_ON: authed ? ago(int(r, 30, 600)) : null,
+    });
+
+    const triggers = ['form_submission', 'list_entry', 'segment_entry', 'email_action', 'date_field', 'abandoned_cart'];
+    for (let i = 1; i <= 3; i++) {
+      out.CMP_Journeys.push({
+        ORG_ID: org.ORG_ID, JOURNEY_ID: idFor(org, 'JN')(i),
+        JOURNEY_NAME: ['Welcome series', 'Re-engage dormant contacts', 'Renewal reminders'][i - 1],
+        LIST_ID: lists[i % lists.length].LIST_ID,
+        STATUS: i === 2 ? 'paused' : 'active', TRIGGER_TYPE: triggers[(i + org.index) % triggers.length],
+        STEPS: int(r, 3, 9), CONTACTS_IN_JOURNEY: i === 2 ? 0 : int(r, 120, 4000),
+        CREATED_BY: uid(int(r, 1, org.users)), MODIFIED_ON: ago(int(r, 3, 200), int(r, 9, 18), 0),
+      });
+    }
+
+    for (let i = 1; i <= 3; i++) {
+      out.CMP_SignupForms.push({
+        ORG_ID: org.ORG_ID, FORM_ID: idFor(org, 'SF')(i),
+        FORM_NAME: ['Newsletter signup', 'Webinar registration', 'Exit intent popup'][i - 1],
+        FORM_TYPE: ['embedded', 'hosted', 'popup'][i - 1], LIST_ID: lists[(i + 1) % lists.length].LIST_ID,
+        STATUS: 'active', DOUBLE_OPT_IN: B(i !== 3), SUBMISSIONS_30D: int(r, 15, 900),
+        CREATED_ON: ago(int(r, 40, 500)),
+      });
+    }
+
+    for (let i = 1; i <= 2 && i <= campaigns.length; i++) {
+      const a = int(r, 18, 34) + r(); const b = a + (r() - 0.5) * 8;
+      out.CMP_AbTests.push({
+        ORG_ID: org.ORG_ID, TEST_ID: idFor(org, 'AB')(i), CAMPAIGN_ID: campaigns[i - 1].CAMPAIGN_ID,
+        TEST_TYPE: pick(r, ['subject_line', 'sender_name', 'content', 'send_time']),
+        SAMPLE_SIZE: int(r, 500, 5000),
+        VARIANT_A_OPEN_RATE: Number(a.toFixed(2)), VARIANT_B_OPEN_RATE: Number(b.toFixed(2)),
+        WINNER: Math.abs(a - b) < 1 ? 'undecided' : (a > b ? 'A' : 'B'),
+        STATUS: 'completed', COMPLETED_ON: ago(int(r, 5, 120), int(r, 9, 18), 0),
+      });
+    }
+
+    ['Product updates', 'Offers and promotions', 'Events and webinars'].forEach((name, i) => {
+      out.CMP_Topics.push({
+        ORG_ID: org.ORG_ID, TOPIC_ID: idFor(org, 'TP')(i + 1), TOPIC_NAME: name,
+        SUBSCRIBERS: int(r, 300, 9000), FREQUENCY_CAP_PER_WEEK: [2, 1, 3][i],
+        STATUS: 'active', CREATED_ON: ago(int(r, 100, 800)),
+      });
+    });
+  }
+  return out;
+}
+
+function buildCrmConfig() {
+  const out = { CRM_WorkflowRules: [], CRM_AssignmentRules: [], CRM_Blueprints: [], CRM_DuplicateRules: [], CRM_SharingRules: [] };
+
+  for (const org of subscribed('crm')) {
+    const r = rng(org.seed + 47);
+    const uid = uidFor(org);
+
+    const wf = [
+      ['Assign hot leads to sales', 'Leads', 'create', 'Field update, Email alert'],
+      ['Notify owner on deal stage change', 'Deals', 'field_update', 'Email alert'],
+      ['Create follow up task', 'Contacts', 'create_or_edit', 'Task'],
+      ['Push closed deals to Books', 'Deals', 'edit', 'Custom function, Webhook'],
+      ['Weekly stale lead reminder', 'Leads', 'scheduled', 'Email alert'],
+    ];
+    wf.forEach(([name, module, trig, actions], i) => {
+      out.CRM_WorkflowRules.push({
+        ORG_ID: org.ORG_ID, WORKFLOW_ID: idFor(org, 'WR')(i + 1), WORKFLOW_NAME: name, MODULE: module,
+        TRIGGER_ON: trig, STATUS: i === 2 ? 'inactive' : 'active', ACTION_TYPES: actions,
+        EXECUTIONS_30D: int(r, 5, 1500), LAST_RUN_ON: ago(int(r, 0, 5), int(r, 0, 23), 0),
+        CREATED_BY: uid(int(r, 1, 3)),
+      });
+    });
+
+    out.CRM_AssignmentRules.push({
+      ORG_ID: org.ORG_ID, RULE_ID: idFor(org, 'CA')(1), RULE_NAME: 'Web leads round robin', MODULE: 'Leads',
+      STATUS: 'active', CRITERIA: 'Lead Source is Web Form', ROUND_ROBIN: B(true),
+      ASSIGN_TO: 'Inside Sales pool', RECORDS_ASSIGNED_30D: int(r, 30, 400), CREATED_ON: ago(int(r, 100, 700)),
+    });
+    out.CRM_AssignmentRules.push({
+      ORG_ID: org.ORG_ID, RULE_ID: idFor(org, 'CA')(2), RULE_NAME: 'Enterprise deals to AE', MODULE: 'Deals',
+      STATUS: pick(r, ['active', 'inactive']), CRITERIA: 'Amount greater than 100000', ROUND_ROBIN: B(false),
+      ASSIGN_TO: 'Account Executive', RECORDS_ASSIGNED_30D: int(r, 2, 40), CREATED_ON: ago(int(r, 50, 400)),
+    });
+
+    out.CRM_Blueprints.push({
+      ORG_ID: org.ORG_ID, BLUEPRINT_ID: idFor(org, 'BP')(1), BLUEPRINT_NAME: 'Standard sales process', MODULE: 'Deals',
+      LAYOUT: 'Standard', STATUS: 'active', STATES: 6, TRANSITIONS: int(r, 8, 14),
+      RECORDS_IN_PROCESS: int(r, 10, 120), MODIFIED_ON: ago(int(r, 20, 300)),
+    });
+    if (org.EDITION === 'Enterprise') {
+      out.CRM_Blueprints.push({
+        ORG_ID: org.ORG_ID, BLUEPRINT_ID: idFor(org, 'BP')(2), BLUEPRINT_NAME: 'Lead qualification', MODULE: 'Leads',
+        LAYOUT: 'Standard', STATUS: pick(r, ['active', 'draft']), STATES: 4, TRANSITIONS: int(r, 4, 8),
+        RECORDS_IN_PROCESS: int(r, 20, 200), MODIFIED_ON: ago(int(r, 10, 200)),
+      });
+    }
+
+    // The duplicates question. Contoso has no rule on Leads - which is how
+    // their duplicates got there.
+    const modules = org.ORG_ID === 'ORG-CONTOSO' ? ['Contacts', 'Accounts'] : ['Leads', 'Contacts', 'Accounts'];
+    modules.forEach((module, i) => {
+      out.CRM_DuplicateRules.push({
+        ORG_ID: org.ORG_ID, RULE_ID: idFor(org, 'DR')(i + 1), MODULE: module,
+        MATCH_FIELDS: module === 'Accounts' ? 'Account Name, Website' : 'Email, Phone',
+        ACTION_ON_DUPLICATE: pick(r, ['block', 'allow_with_warning', 'merge']), STATUS: 'active',
+        DUPLICATES_FOUND_LAST_RUN: int(r, 0, 60), LAST_RUN_ON: ago(int(r, 0, 14), int(r, 1, 6), 0),
+      });
+    });
+
+    out.CRM_SharingRules.push({
+      ORG_ID: org.ORG_ID, RULE_ID: idFor(org, 'SR')(1), RULE_NAME: 'Sales sees marketing leads', MODULE: 'Leads',
+      SHARE_FROM: 'Marketing (role)', SHARE_TO: 'Sales (role)', ACCESS_LEVEL: 'read_only', STATUS: 'active',
+      CREATED_ON: ago(int(r, 100, 600)),
+    });
+    out.CRM_SharingRules.push({
+      ORG_ID: org.ORG_ID, RULE_ID: idFor(org, 'SR')(2), RULE_NAME: 'Managers edit all deals', MODULE: 'Deals',
+      SHARE_FROM: 'Sales Executive (role)', SHARE_TO: 'Sales Manager (role)', ACCESS_LEVEL: 'read_write',
+      STATUS: 'active', CREATED_ON: ago(int(r, 100, 600)),
+    });
+  }
+  return out;
+}
+
+function buildDirectory() {
+  const out = { DIR_Domains: [], DIR_SecurityPolicies: [], DIR_Applications: [], DIR_UserApplications: [], DIR_Groups: [] };
+
+  for (const org of subscribed('directory')) {
+    const r = rng(org.seed + 53);
+    const uid = uidFor(org);
+    const slug = org.ORG_NAME.split(' ')[0].toLowerCase();
+    const tenant = `${slug}.onmicrosoft.example`;
+
+    out.DIR_Domains.push({
+      ORG_ID: org.ORG_ID, DOMAIN_ID: idFor(org, 'DM')(1), DOMAIN_NAME: `${slug}.example.com`,
+      VERIFICATION_STATUS: 'verified', VERIFIED_ON: ago(int(r, 200, 900)),
+      TENANT_ID: `T-${org.index}${String(int(r, 1000, 9999))}`, TENANT_NAME: tenant,
+      SYNC_SOURCE: pick(r, ['azure_ad', 'active_directory', 'google_workspace', 'none']), IS_PRIMARY: B(true),
+    });
+    out.DIR_Domains.push({
+      ORG_ID: org.ORG_ID, DOMAIN_ID: idFor(org, 'DM')(2), DOMAIN_NAME: `${slug}-labs.example.com`,
+      VERIFICATION_STATUS: pick(r, ['verified', 'pending']), VERIFIED_ON: null,
+      TENANT_ID: null, TENANT_NAME: null, SYNC_SOURCE: 'none', IS_PRIMARY: B(false),
+    });
+
+    // Acme has configured nothing - so "have security policies been
+    // configured" has a real no for one customer.
+    const lax = org.ORG_ID === 'ORG-ACME';
+    const policies = [
+      ['Password policy', 'password', lax ? 'disabled' : 'enforced', 'all users', 'Minimum 12 characters, rotate every 90 days'],
+      ['Multi factor authentication', 'mfa', lax ? 'optional' : 'enforced', 'all users', 'TOTP or push, remember device 14 days'],
+      ['Office IP restriction', 'ip_restriction', lax ? 'disabled' : pick(r, ['enforced', 'optional']), 'Finance', 'Allow 203.0.113.0/24 only'],
+      ['Session policy', 'session', lax ? 'disabled' : 'enforced', 'all users', 'Sign out after 8 hours idle'],
+    ];
+    policies.forEach(([name, type, status, applies, settings], i) => {
+      out.DIR_SecurityPolicies.push({
+        ORG_ID: org.ORG_ID, POLICY_ID: idFor(org, 'SP')(i + 1), POLICY_NAME: name, POLICY_TYPE: type,
+        STATUS: status, APPLIES_TO: applies, SETTINGS: settings,
+        MODIFIED_BY: uid(1), MODIFIED_ON: ago(int(r, 10, 400), int(r, 9, 18), 0),
+      });
+    });
+
+    const apps = [
+      ['Zoho CRM', 'zoho', true, 'scim'], ['Zoho Desk', 'zoho', true, 'scim'], ['Zoho Mail', 'zoho', true, 'jit'],
+      ['Slack', 'saml', true, 'manual'], ['GitHub', 'oidc', org.EDITION === 'Enterprise', 'manual'],
+    ];
+    apps.forEach(([name, type, sso, prov], i) => {
+      out.DIR_Applications.push({
+        ORG_ID: org.ORG_ID, APP_ID: idFor(org, 'AP')(i + 1), APP_NAME: name, APP_TYPE: type,
+        SSO_ENABLED: B(sso), PROVISIONING: prov, ASSIGNED_USERS: 0, STATUS: 'active',
+        ADDED_ON: ago(int(r, 100, 800)),
+      });
+    });
+
+    // Every user gets CRM and Mail; the odd-numbered seats get Desk; a few get
+    // Slack; only seats 1-3 get GitHub. So "is U-1005 part of any apps" answers
+    // differently from "is U-1002".
+    let n = 0;
+    for (let seat = 1; seat <= org.users; seat++) {
+      const grants = [1, 3];
+      if (seat % 2 === 1) grants.push(2);
+      if (seat % 4 === 0) grants.push(4);
+      if (seat <= 3) grants.push(5);
+      for (const appN of grants) {
+        n += 1;
+        out.DIR_UserApplications.push({
+          ORG_ID: org.ORG_ID, ASSIGNMENT_ID: idFor(org, 'UA')(n), USER_ID: uid(seat),
+          APP_ID: idFor(org, 'AP')(appN), ROLE_IN_APP: appN === 5 && seat === 1 ? 'Owner' : pick(r, ['Member', 'Member', 'Admin']),
+          ASSIGNED_ON: ago(int(r, 30, 600)), LAST_ACCESSED: ago(int(r, 0, 40), int(r, 8, 20), 0),
+          STATUS: seat === org.users ? 'suspended' : 'active',
+        });
+        out.DIR_Applications.find((a) => a.ORG_ID === org.ORG_ID && a.APP_ID === idFor(org, 'AP')(appN)).ASSIGNED_USERS += 1;
+      }
+    }
+
+    ['Engineering', 'Sales', 'Support', 'Finance'].forEach((name, i) => {
+      out.DIR_Groups.push({
+        ORG_ID: org.ORG_ID, GROUP_ID: idFor(org, 'GR')(i + 1), GROUP_NAME: name, GROUP_TYPE: 'department',
+        MEMBER_COUNT: int(r, 2, 6), OWNER_ID: uid(int(r, 1, 4)), CREATED_ON: ago(int(r, 200, 900)),
+      });
+    });
+    out.DIR_Groups.push({
+      ORG_ID: org.ORG_ID, GROUP_ID: idFor(org, 'GR')(5), GROUP_NAME: 'Security champions', GROUP_TYPE: 'collaboration',
+      MEMBER_COUNT: int(r, 3, 7), OWNER_ID: uid(1), CREATED_ON: ago(int(r, 30, 300)),
+    });
+  }
+  return out;
+}
+
 const STAGES = {
   platform: buildPlatform,
   crm: buildCrm,
   campaigns: buildCampaigns,
   desk: buildDesk,
   audit: buildAudit,
+  crm_config: buildCrmConfig,
+  campaigns_config: buildCampaignsConfig,
+  desk_config: buildDeskConfig,
+  directory: buildDirectory,
 };
 
 const BATCH = 200;

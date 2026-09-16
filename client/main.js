@@ -51,8 +51,8 @@ const state = {
   tables: [], explore: { table: null, page: 1 },
 };
 
-const SERVICE_LABELS = { crm: 'CRM', campaigns: 'Campaigns', desk: 'Desk' };
-const SERVICE_COLUMN = { crm: 'CRM_ORG_ID', campaigns: 'CMP_ORG_ID', desk: 'DESK_ORG_ID' };
+const SERVICE_LABELS = { crm: 'CRM', campaigns: 'Campaigns', desk: 'Desk', directory: 'Directory' };
+const SERVICE_COLUMN = { crm: 'CRM_ORG_ID', campaigns: 'CMP_ORG_ID', desk: 'DESK_ORG_ID', directory: 'DIR_ORG_ID' };
 
 /* ------------------------------------------------------------------ utils */
 
@@ -187,7 +187,8 @@ function onConnected(r) {
   ui.question.placeholder = {
     crm: "e.g. what's the source of lead 4551000000234017",
     campaigns: 'e.g. can U-2004 create a segment',
-    desk: 'e.g. how many open tickets per department',
+    desk: 'e.g. has dmarc been configured',
+    directory: 'e.g. have security policies been configured',
   }[state.service] ?? "e.g. what's the source of lead 4551000000234017";
   ui.question.focus();
 

@@ -26,6 +26,11 @@ module.exports = {
     'amount': ['value', 'deal size', 'worth'],
     'export job': ['export', 'data download', 'csv download'],
     'field history': ['who changed', 'change log', 'audit of the field', 'edit history'],
+    'workflow': ['workflow rule', 'automation', 'trigger'],
+    'assignment rule': ['round robin', 'lead assignment', 'auto assign', 'routing'],
+    'blueprint': ['process', 'sales process', 'stage transitions'],
+    'duplicate rule': ['duplicate check', 'dedupe', 'deduplication', 'duplicate management', 'find and merge'],
+    'sharing rule': ['data sharing', 'record sharing', 'sharing settings'],
   },
 
   piiColumns: [
@@ -170,9 +175,117 @@ module.exports = {
       ],
       refs: [{ column: 'CHANGED_BY_REF', parent: 'Users', from: 'CHANGED_BY', onDelete: 'ON-DELETE-SET-NULL' }],
     },
+
+    /* ---- automation, data administration, security ------------------- */
+
+    {
+      name: 'CRM_WorkflowRules',
+      listable: true,
+      label: 'workflow rules',
+      describes: 'A workflow rule: the module, what triggers it, what it does, how often it has fired.',
+      columns: [
+        { name: 'ORG_ID', type: 'varchar', max_length: 64, mandatory: true, indexed: true },
+        { name: 'WORKFLOW_ID', type: 'varchar', max_length: 32, indexed: true },
+        { name: 'WORKFLOW_NAME', type: 'varchar', max_length: 160, indexed: true },
+        { name: 'MODULE', type: 'varchar', max_length: 20, indexed: true, values: ['Leads', 'Contacts', 'Accounts', 'Deals', 'Tasks'] },
+        { name: 'TRIGGER_ON', type: 'varchar', max_length: 24, indexed: true, values: ['create', 'edit', 'create_or_edit', 'delete', 'field_update', 'scheduled'] },
+        { name: 'STATUS', type: 'varchar', max_length: 16, indexed: true, values: ['active', 'inactive'] },
+        { name: 'ACTION_TYPES', type: 'varchar', max_length: 255, describe: 'Email alerts tasks field updates webhooks functions' },
+        { name: 'EXECUTIONS_30D', type: 'int' },
+        { name: 'LAST_RUN_ON', type: 'datetime', indexed: true },
+        { name: 'CREATED_BY', type: 'varchar', max_length: 32, indexed: true },
+      ],
+      refs: [{ column: 'CREATED_BY_REF', parent: 'Users', from: 'CREATED_BY', onDelete: 'ON-DELETE-SET-NULL' }],
+    },
+
+    {
+      name: 'CRM_AssignmentRules',
+      listable: true,
+      label: 'assignment rules',
+      describes: 'How new records are distributed: round robin across a pool, or to a named owner by criteria.',
+      columns: [
+        { name: 'ORG_ID', type: 'varchar', max_length: 64, mandatory: true, indexed: true },
+        { name: 'RULE_ID', type: 'varchar', max_length: 32, indexed: true },
+        { name: 'RULE_NAME', type: 'varchar', max_length: 160, indexed: true },
+        { name: 'MODULE', type: 'varchar', max_length: 20, indexed: true, values: ['Leads', 'Contacts', 'Deals', 'Cases'] },
+        { name: 'STATUS', type: 'varchar', max_length: 16, indexed: true, values: ['active', 'inactive'] },
+        { name: 'CRITERIA', type: 'varchar', max_length: 255 },
+        { name: 'ROUND_ROBIN', type: 'boolean', default_value: 'false' },
+        { name: 'ASSIGN_TO', type: 'varchar', max_length: 160, describe: 'A user or a round robin pool' },
+        { name: 'RECORDS_ASSIGNED_30D', type: 'int' },
+        { name: 'CREATED_ON', type: 'datetime', indexed: true },
+      ],
+    },
+
+    {
+      name: 'CRM_Blueprints',
+      listable: true,
+      label: 'blueprints',
+      describes: 'A Blueprint process on a module: its states, transitions and how many records are mid process.',
+      columns: [
+        { name: 'ORG_ID', type: 'varchar', max_length: 64, mandatory: true, indexed: true },
+        { name: 'BLUEPRINT_ID', type: 'varchar', max_length: 32, indexed: true },
+        { name: 'BLUEPRINT_NAME', type: 'varchar', max_length: 160, indexed: true },
+        { name: 'MODULE', type: 'varchar', max_length: 20, indexed: true, values: ['Leads', 'Deals', 'Contacts', 'Accounts'] },
+        { name: 'LAYOUT', type: 'varchar', max_length: 80 },
+        { name: 'STATUS', type: 'varchar', max_length: 16, indexed: true, values: ['active', 'inactive', 'draft'] },
+        { name: 'STATES', type: 'int' },
+        { name: 'TRANSITIONS', type: 'int' },
+        { name: 'RECORDS_IN_PROCESS', type: 'int' },
+        { name: 'MODIFIED_ON', type: 'datetime', indexed: true },
+      ],
+    },
+
+    {
+      name: 'CRM_DuplicateRules',
+      listable: true,
+      label: 'duplicate rules',
+      describes: 'Duplicate management per module: which fields must match, what happens on a match, what the last check found.',
+      columns: [
+        { name: 'ORG_ID', type: 'varchar', max_length: 64, mandatory: true, indexed: true },
+        { name: 'RULE_ID', type: 'varchar', max_length: 32, indexed: true },
+        { name: 'MODULE', type: 'varchar', max_length: 20, indexed: true, values: ['Leads', 'Contacts', 'Accounts', 'Deals'] },
+        { name: 'MATCH_FIELDS', type: 'varchar', max_length: 255, describe: 'Fields compared for a duplicate' },
+        { name: 'ACTION_ON_DUPLICATE', type: 'varchar', max_length: 24, indexed: true, values: ['block', 'merge', 'allow_with_warning'] },
+        { name: 'STATUS', type: 'varchar', max_length: 16, indexed: true, values: ['active', 'inactive'] },
+        { name: 'DUPLICATES_FOUND_LAST_RUN', type: 'int' },
+        { name: 'LAST_RUN_ON', type: 'datetime', indexed: true },
+      ],
+    },
+
+    {
+      name: 'CRM_SharingRules',
+      listable: true,
+      label: 'data sharing rules',
+      describes: 'A data sharing rule: which role or group shares records with which, and at what access level.',
+      columns: [
+        { name: 'ORG_ID', type: 'varchar', max_length: 64, mandatory: true, indexed: true },
+        { name: 'RULE_ID', type: 'varchar', max_length: 32, indexed: true },
+        { name: 'RULE_NAME', type: 'varchar', max_length: 160, indexed: true },
+        { name: 'MODULE', type: 'varchar', max_length: 20, indexed: true, values: ['Leads', 'Contacts', 'Accounts', 'Deals'] },
+        { name: 'SHARE_FROM', type: 'varchar', max_length: 120 },
+        { name: 'SHARE_TO', type: 'varchar', max_length: 120 },
+        { name: 'ACCESS_LEVEL', type: 'varchar', max_length: 16, indexed: true, values: ['read_only', 'read_write', 'full'] },
+        { name: 'STATUS', type: 'varchar', max_length: 16, indexed: true, values: ['active', 'inactive'] },
+        { name: 'CREATED_ON', type: 'datetime', indexed: true },
+      ],
+    },
   ],
 
   commonQuestions: [
+    {
+      q: 'is there a duplicate rule on leads',
+      zcql:
+        'SELECT CRM_DuplicateRules.MODULE, CRM_DuplicateRules.MATCH_FIELDS, CRM_DuplicateRules.ACTION_ON_DUPLICATE, ' +
+        'CRM_DuplicateRules.STATUS, CRM_DuplicateRules.DUPLICATES_FOUND_LAST_RUN FROM CRM_DuplicateRules ' +
+        "WHERE CRM_DuplicateRules.MODULE = 'Leads'",
+    },
+    {
+      q: 'which workflow rules are active on leads',
+      zcql:
+        'SELECT CRM_WorkflowRules.WORKFLOW_NAME, CRM_WorkflowRules.TRIGGER_ON, CRM_WorkflowRules.ACTION_TYPES, ' +
+        "CRM_WorkflowRules.EXECUTIONS_30D FROM CRM_WorkflowRules WHERE CRM_WorkflowRules.MODULE = 'Leads' AND CRM_WorkflowRules.STATUS = 'active'",
+    },
     {
       q: "what's the source of lead 4551000000234017",
       zcql:
